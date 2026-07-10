@@ -6,7 +6,7 @@ from langchain_core.output_parsers import StrOutputParser
 #1 Inicializando o modelo que baixamos no Ollama
 # Pode substituir o llama3 por deepseek se tiver baixado ele no Ollama
 
-modelo_local = OllamaLLM(model="llama3")
+modelo_local = OllamaLLM(model="llama3.1")
 
 # 2 Criando o prompt ) As instruçõed de como a IA deve comportar
 # servicos é um array de strings que contém os serviços que a IA pode agendar

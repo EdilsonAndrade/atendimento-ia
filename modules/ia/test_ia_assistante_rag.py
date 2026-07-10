@@ -8,7 +8,7 @@ def executar_chat_com_meus_dados():
     gerenciador = GerenciadorVetores(pasta_db=pasta_banco)
 
     # 2. Instancia o assistente com o modelo local (mude para 'deepseek-r1' se preferir)
-    assistente = AssistenteRAG(gerenciador_vetores=gerenciador, modelo_nome="llama3")
+    assistente = AssistenteRAG(gerenciador_vetores=gerenciador, modelo_nome="llama3.1")
 
     print("\n" + "="*50)
     print("SISTEMA PRONTO PARA PERGUNTAS")

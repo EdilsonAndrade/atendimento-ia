@@ -4,7 +4,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 class AssistenteRAG:
-    def __init__(self, gerenciador_vetores, modelo_nome: str = "llama3"):
+    def __init__(self, gerenciador_vetores, modelo_nome: str = "llama3.1"):
         self.gerenciador_vetores = gerenciador_vetores
         print(f"Inicializando modelo local '{modelo_nome}' via Ollama...")
         self.llm = OllamaLLM(model=modelo_nome)
