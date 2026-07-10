@@ -1,18 +1,23 @@
+# modules/ai/test_tool_calling.py
+import os
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
+from modules.vetorizacao.vector_manager import VectorManager
 
+# 1. Instanciamos os dois gerenciadores apontando para os nossos bancos reais do disco
+operational_manager = VectorManager(db_directory="db/operational_db")
+institutional_manager = VectorManager(db_directory="db/institutional_db")
 
-#1 Criamos uma ferramente simulada para o Banco Operaciona
-# A DOCSTRING (texto entre aspsas triplas) é fundamental. É lendo esse texto que a IA sabe quando usar a ferramenta!
-
+# 2. Definição das ferramentas com as buscas de verdade conectadas
 @tool
 def search_operational_db(query: str) -> str:
     """
     Use this tool to search for schedules, time slots, barber names, prices, 
     and operational data of the barbershop/store.
     """
-    return "Simulating response from operational database..."
-
+    print(f" -> [EXECUÇÃO] Acessando banco OPERACIONAL para buscar: '{query}'")
+    results = operational_manager.search_context(query, num_results=3)
+    return "\n\n".join(results)
 
 @tool
 def search_institutional_db(query: str) -> str:
@@ -20,51 +25,60 @@ def search_institutional_db(query: str) -> str:
     Use this tool to search for resumes, professional experience, 
     company rules, policies, and contracts.
     """
-    return "Simulating response from institutional database..."
+    print(f" -> [EXECUÇÃO] Acessando banco INSTITUCIONAL para buscar: '{query}'")
+    results = institutional_manager.search_context(query, num_results=3)
+    return "\n\n".join(results)
 
 
+def testar_roteamento_real():
+    print("\n" + "=" * 60)
+    print(" EXECUTANDO ROTEAMENTO REAL COM MULTI-BANCOS")
+    print("=" * 60)
 
-def test_ia_decision():
-    print("=" * 60) 
-    print(" TEST DE TOOL CALLING: A IA SABE ESCOLHER O BANCO?")
-    print("=" * 60 )
-    
-    # 3. Inicializamos o modelo (Usamos ChatOllama porque ele tem suporte nativo a ferramentas)
-    # temperature=0 faz a IA ser fria, lógica e direta na decisão
     llm = ChatOllama(model="llama3.1", temperature=0)
+    tools_list = [search_operational_db, search_institutional_db]
     
-    # 4 Colocamos o conto de utilidades na IA
+    # Criamos o mapeamento para facilitar a chamada dinâmica baseada no nome que a IA escolher
+    tools_map = {
+        "search_operational_db": search_operational_db,
+        "search_institutional_db": search_institutional_db
+    }
     
-    ferramentas = [search_operational_db, search_institutional_db]
-    llm_com_ferramentas = llm.bind_tools(ferramentas)
-    
-    # 5. Bateroa de testes
-    
-    perguntas =[
-        "Qual a experiência profissional do Edilson?",
-        "Tem horário com o barbeiro Carlos as 10h?",
-        "Como funciona a política de cancelamento em cima da hora?",
-        "Qual o nome completo do Edilson?"
+    llm_com_ferramentas = llm.bind_tools(tools_list)
+
+    # Bateria de testes para ver se ele acha seus dados
+    perguntas_teste = [
+        "Qual o nome completo do Edilson?",
+        "Quem é o barbeiro da planilha que atende às 10h?",
     ]
-    
-    for pergunta in perguntas:
-        print("\n" + "-" * 40)
-        print(f"Usuário Pergunta: {pergunta}")
+
+    for pergunta in perguntas_teste:
+        print(f"\nUser: '{pergunta}'")
         
-        # A IA não vai gerar um texto de resposta, ela vai devolver um objeto de 'tool_call'
+        # Passo A: IA decide qual ferramenta usar
         resposta_ia = llm_com_ferramentas.invoke(pergunta)
-        print(f"Resposta da IA: {resposta_ia}")
         
-        # Lendo a decisão da IA
         if resposta_ia.tool_calls:
             for chamada in resposta_ia.tool_calls:
-                nome_da_ferramenta = chamada["name"]
-                argumentos = chamada["args"]
-                print(f"✅ DECISÃO: A IA decidiu chamar a ferramenta -> [{nome_da_ferramenta}]")
-                print(f"   E ela vai pesquisar por: {argumentos}")
+                tool_name = chamada['name']
+                tool_args = tuple(chamada['args'].values())[0] # Pega o texto da query gerada pela IA
+                
+                # Passo B: Executamos dinamicamente a ferramenta que o banco escolheu
+                funcao_real = tools_map[tool_name]
+                conteudo_do_banco = funcao_real.invoke({"query": tool_args})
+                
+                # Passo C: Damos o veredito final para a IA ler o dado real e responder o usuário de forma limpa
+                print(" -> IA formulando resposta final baseada no banco...")
+                prompt_final = (
+                    f"Responda à pergunta do usuário baseando-se apenas neste contexto real:\n\n"
+                    f"{conteudo_do_banco}\n\n"
+                    f"Pergunta: {pergunta}"
+                )
+                resposta_final = llm.invoke(prompt_final)
+                print(f"🤖 IA: {resposta_final.content}")
         else:
-            print("❌ ERRO: A IA tentou responder direto em vez de usar uma ferramenta.")
-            
+            print(f"🤖 IA (Sem ferramenta): {resposta_ia.content}")
+        print("-" * 50)
 
 if __name__ == "__main__":
-    test_ia_decision()
+    testar_roteamento_real()
