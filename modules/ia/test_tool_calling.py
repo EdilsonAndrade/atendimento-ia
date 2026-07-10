@@ -16,7 +16,7 @@ def search_operational_db(query: str) -> str:
     and operational data of the barbershop/store.
     """
     print(f" -> [EXECUÇÃO] Acessando banco OPERACIONAL para buscar: '{query}'")
-    results = operational_manager.search_context(query, num_results=3)
+    results = operational_manager.search_context(query, num_results=5)
     return "\n\n".join(results)
 
 @tool
@@ -26,7 +26,7 @@ def search_institutional_db(query: str) -> str:
     company rules, policies, and contracts.
     """
     print(f" -> [EXECUÇÃO] Acessando banco INSTITUCIONAL para buscar: '{query}'")
-    results = institutional_manager.search_context(query, num_results=3)
+    results = institutional_manager.search_context(query, num_results=5)
     return "\n\n".join(results)
 
 
@@ -48,8 +48,10 @@ def testar_roteamento_real():
 
     # Bateria de testes para ver se ele acha seus dados
     perguntas_teste = [
-        "Qual o nome completo do Edilson?",
-        "Quem é o barbeiro da planilha que atende às 10h?",
+        "What is Edilson surname?",
+        "Quem é que atende às 10h?",
+        "Em que ano o Edilson trabalhou na BSI?",
+        "Em que ano o Edilson estudou com CrewAI?"
     ]
 
     for pergunta in perguntas_teste:
@@ -70,9 +72,14 @@ def testar_roteamento_real():
                 # Passo C: Damos o veredito final para a IA ler o dado real e responder o usuário de forma limpa
                 print(" -> IA formulando resposta final baseada no banco...")
                 prompt_final = (
-                    f"Responda à pergunta do usuário baseando-se apenas neste contexto real:\n\n"
+                    f"You are an expert assistant. Answer the user's question based strictly on the provided context below.\n"
+                    f"CRITICAL: Detect the language of the user's question and respond EXCLUSIVELY in that same language (e.g., if the question is in English, reply in English; if in Portuguese, reply in Portuguese).\n"
+                    f"Do not include any conversational meta-text like 'The question is in English' or explanations about your language detection. Go straight to the answer.\n"
+                    f"Provide a complete, polite, and professional answer based only on his question. Avoid extremely short or dry responses.\n"
+                    f"CRITICAL: Dont anwser with information that was not user question.\n"
+                    f"Note: The user might use acronyms (like BSI) for company names that could be spelled out fully (like HBSIS) in the context. Make this connection if it makes sense.\n\n"
                     f"{conteudo_do_banco}\n\n"
-                    f"Pergunta: {pergunta}"
+                    f"User Question: {pergunta}"
                 )
                 resposta_final = llm.invoke(prompt_final)
                 print(f"🤖 IA: {resposta_final.content}")
