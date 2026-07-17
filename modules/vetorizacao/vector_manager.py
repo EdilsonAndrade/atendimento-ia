@@ -17,7 +17,7 @@ class VectorManager:
         if os.path.exists(self.db_directory):
             self.db = Chroma(persist_directory=self.db_directory, embedding_function=self.embeddings)
 
-    def create_db_with_texts(self, texts: list):
+    def save_documents(self, texts: list):
         """
         Converts texts into vectors and saves them to disk.
         """

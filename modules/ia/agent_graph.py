@@ -281,7 +281,7 @@ if __name__ == "__main__":
     print("=" * 60)
 
     # Simulação: O usuário faz uma pergunta
-    pergunta_teste = "Qual o nome completo do Edilson e qual a experiência dele na BSI?"
+    pergunta_teste = "Qual o nome completo do Edilson e qual a experiência dele na BSI? E qual a última empresa que ele trabalhou?"
     
     # 1. Estado Inicial
     estado_inicial = {
