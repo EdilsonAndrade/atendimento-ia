@@ -16,6 +16,9 @@ class VectorManager:
         
         if os.path.exists(self.db_directory):
             self.db = Chroma(persist_directory=self.db_directory, embedding_function=self.embeddings)
+        else:
+            print(f"O caminho de informações {self.db_directory} do Tenant não existe")
+            raise ValueError(f"O caminho de informações {self.db_directory} do Tenant não existe")
 
     def save_documents(self, texts: list):
         """

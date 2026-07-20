@@ -19,11 +19,11 @@ def initialize_tenant_data(tenant_id: str, pdf_path: str = None, excel_path: str
     # ============================================================================
     # 1. PROCESSAMENTO E VETORIZAÇÃO DO PDF (DADOS INSTITUCIONAIS)
     # ============================================================================
-    inst_db_path = f"db/{tenant_id}/institutional_db"
-    oper_db_path = f"db/{tenant_id}/operational_db"
+    db_path = f"db/{tenant_id}/knowledge_db"
+    
      
-    print(f"\n[1/2] Processando PDF Institucional para: {inst_db_path}")
-
+    print(f"\n[1/2] Processando PDF Institucional para: {db_path}")
+    row_chunks_db = []
     if pdf_path:
          
         if (not os.path.exists(pdf_path)):
@@ -32,22 +32,15 @@ def initialize_tenant_data(tenant_id: str, pdf_path: str = None, excel_path: str
 
         # Lendo o PDF e extraindo o texto de cada página
         reader = PdfReader(pdf_path)
-        text_chunks = []
         for i, page in enumerate(reader.pages):
             text = page.extract_text()
             if text:
                 # Adicionamos metadados implícitos no chunk para ajudar o RAG
                 chunk_formatado = f"[Documento: Currículo] [Página: {i+1}]\n{text.strip()}"
-                text_chunks.append(chunk_formatado)
+                row_chunks_db.append(chunk_formatado)
 
-        if text_chunks:
-            # Instancia o gerenciador do ChromaDB na pasta isolada do cliente
-            inst_manager = VectorManager(db_directory=inst_db_path)
-            # Salva os pedaços de texto indexados no banco vetorial dele
-            inst_manager.save_documents(text_chunks)
-            print(f" -> Sucesso! {len(text_chunks)} páginas do PDF foram vetorizadas.")
-        else:
-            print("⚠ Nenhum texto pôde ser extraído do PDF.")
+    else:
+        print("⚠ PDF não fornecido.")
 
     # ============================================================================
     # 2. PROCESSAMENTO E VETORIZAÇÃO DO EXCEL (DADOS OPERACIONAIS)
@@ -56,9 +49,9 @@ def initialize_tenant_data(tenant_id: str, pdf_path: str = None, excel_path: str
     # ============================================================================
     # 3. PROCESSAMENTO E VETORIZAÇÃO DO TXT (DADOS ADICIONAIS) para o RAG também em operacional
     # ============================================================================
-    row_chunks_operational = []
+
     if txt_path:
-        print(f"\n[3/3] Processando TXT Adicional para: {oper_db_path}")
+        print(f"\n[3/3] Processando TXT Adicional para: {db_path}")
 
         if not os.path.exists(txt_path):
             print(f"❌ ERRO: Arquivo TXT não encontrado em: {txt_path}")
@@ -68,44 +61,48 @@ def initialize_tenant_data(tenant_id: str, pdf_path: str = None, excel_path: str
             text = f.read()
 
         if text:
-            row_chunks_operational.append(f"[Dados Operacionais linhas TXT:]\n{text.strip()}")
+            row_chunks_db.append(f"[Dados Operacionais linhas TXT:]\n{text.strip()}")
             print(f" -> Sucesso! O TXT foi vetorizado.")
         else:
             print("⚠ Nenhum texto pôde ser extraído do TXT.")
+    else:
+        print("[-] Ignorando TXT (Não fornecido).")
    
     
 
-    if excel_path and not os.path.exists(excel_path):
-        print(f"❌ ERRO: Arquivo Excel não encontrado em: {excel_path}")
-        return
+    if excel_path:
+        print(f"\n[3/3] Processando Planilha Excel para: {db_path}")
+        if not os.path.exists(excel_path):
+            print(f"❌ ERRO: Arquivo Excel não encontrado em: {excel_path}")
+            return
 
-    if excel_path is None:
-        print("⚠ Aviso: Nenhum arquivo Excel fornecido.")
-
-    # Lendo a planilha de horários/serviços
-    df = pd.read_excel(excel_path) if excel_path else pd.DataFrame()
-  
+        
+        # Lendo a planilha de horários/serviços
+        df = pd.read_excel(excel_path) if excel_path else pd.DataFrame()
     
-    # Varre cada linha da planilha e transforma em uma frase descritiva rica para o RAG
-    for index, row in df.iterrows():
-        partes_linha = [f"{coluna}: {valor}" for coluna, valor in row.items() if pd.notna(valor)]
-        linha_texto = " | ".join(partes_linha)
-        # Contextualiza o chunk para que a busca semântica por IA funcione perfeitamente
-        chunk_operacional = f"[Dados Operacionais] [Linha Planilha: {index+1}]\n{linha_texto}"
-        row_chunks_operational.append(chunk_operacional)
-
-    if row_chunks_operational:
-        # Instancia o gerenciador operacional na pasta isolada do cliente
-        oper_manager = VectorManager(db_directory=oper_db_path)
-        # Salva as linhas indexadas no banco vetorial operacional dele
-        oper_manager.save_documents(row_chunks_operational)
-        print(f" -> Sucesso! {len(row_chunks_operational)} linhas da planilha foram vetorizadas.")
+        
+        # Varre cada linha da planilha e transforma em uma frase descritiva rica para o RAG
+        for index, row in df.iterrows():
+            partes_linha = [f"{coluna}: {valor}" for coluna, valor in row.items() if pd.notna(valor)]
+            linha_texto = " | ".join(partes_linha)
+            # Contextualiza o chunk para que a busca semântica por IA funcione perfeitamente
+            chunk_operacional = f"[Dados Operacionais] [Linha Planilha: {index+1}]\n{linha_texto}"
+            row_chunks_db.append(chunk_operacional)
     else:
-        print("⚠ Nenhuma linha válida foi encontrada na planilha.")
+        print("⚠ Excell ignorado, não fornecido")
 
-    print("\n" + "=" * 60)
-    print(f" INGESTÃO DO TENANT [{tenant_id}] CONCLUÍDA COM SUCESSO!")
-    print("=" * 60)
+    if row_chunks_db:
+        # Instancia o gerenciador operacional na pasta isolada do cliente
+        oper_manager = VectorManager(db_directory=db_path)
+        # Salva as linhas indexadas no banco vetorial operacional dele
+        oper_manager.save_documents(row_chunks_db)
+        print(f" -> Sucesso! {len(row_chunks_db)} linhas da planilha foram vetorizadas.")
+        print("\n" + "=" * 60)
+        print(f" INGESTÃO DO TENANT [{tenant_id}] CONCLUÍDA COM SUCESSO!")
+        print("=" * 60)
+    else:
+        print(f" NÃO REALIZADA INGESTÃO DO TENANT - FALTA DE INFORMAÇÃO")    
+
 
 
 if __name__ == "__main__":
