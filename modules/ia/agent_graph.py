@@ -111,10 +111,11 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     # O banco de dados agora é instanciado apontando para a pasta do cliente específico.
     db_path = f"db/{tenant_id}/institutional_db"
     print(f" -> [MULTITENANT] Conectando ao banco de dados do Tenant: '{tenant_id}' em '{db_path}'")
-    
-    # Instanciamos o VectorManager dinamicamente
-    manager = VectorManager(db_directory=db_path)
-    
+    try:
+        # Instanciamos o VectorManager dinamicamente
+        manager = VectorManager(db_directory=db_path)
+    except:
+        return {"messages": [AIMessage(content="Não foi encontrado dados do cliente para resposta")]}
     # 1. Pegamos a pergunta original do usuário (a primeira mensagem do histórico)
     # Como as mensagens acumulam, a última mensagem do tipo HumanMessage é a pergunta do usuário.
     pergunta_usuario = ""
@@ -165,11 +166,14 @@ def operational_node(state: AgentState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
     
-    db_path = f"db/{tenant_id}/operational_db"
+    db_path = f"db/{tenant_id}/knowledge_db"
     print(f" -> [MULTITENANT] Conectando ao banco de dados do Tenant: '{tenant_id}' em '{db_path}'")
     
-    # Instanciamos o VectorManager dinamicamente
-    manager = VectorManager(db_directory=db_path)
+    try:
+        # Instanciamos o VectorManager dinamicamente
+        manager = VectorManager(db_directory=db_path)
+    except:
+        return {"messages": [AIMessage(content="Não foi encontrado dados do cliente para resposta")]}
     
     # 1. Pegamos a pergunta original do usuário no histórico
     pergunta_usuario = ""
@@ -293,7 +297,7 @@ if __name__ == "__main__":
 
     # 2. Configuração Dinâmica (O FastAPI passaria isso dinamicamente dependendo do usuário autenticado)
     # ATENÇÃO: Para simular o teste local mantendo seus dados, lembre-se de criar a estrutura de pastas:
-    # 'db/interasis_barber/operational_db' e 'db/interasis_barber/institutional_db'
+    # 'db/interasis_barber/kwnoledge_db
     configuracao_requisicao = {
         "configurable": {
             "tenant_id": "interasis_barber"
