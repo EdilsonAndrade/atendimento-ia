@@ -1,0 +1,21 @@
+# Ponto de Entrada que inicializa a aplicação FastAPI e registra os endpoints da versão 1 (v1) da API.
+# main.py
+import uvicorn
+from fastapi import FastAPI
+from app.core.config import settings
+from app.api.v1.router import api_router
+
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    version=settings.PROJECT_VERSION,
+    description=settings.PROJECT_DESCRIPTION,
+    docs_url="/docs",       # Rota explícita do Swagger
+    redoc_url="/redoc"      # Rota alternativa corporativa
+)
+
+# Acopla todas as rotas centralizadas do roteador v1
+app.include_router(api_router, prefix=settings.API_V1_STR)
+
+if __name__ == "__main__":
+    # Roda o servidor localmente na porta 8000 de forma otimizada
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True, app_dir=".")
