@@ -1,12 +1,20 @@
-# Contratos de dados de entrada/saida do chat
+# app/schemas/chat.py
+from typing import Optional
 from pydantic import BaseModel, Field
 
 class MessageRequest(BaseModel):
-    message: str = Field(...,examples=["Qual o horário disponíve para corte hoje?"], description="Mensagem ou pergunta textual enviada pelo usuário final.")
-
+    message: str = Field(
+        ...,
+        examples=["Qual o horário disponível para corte hoje?"], 
+        description="Mensagem ou pergunta textual enviada pelo usuário final."
+    )
+    thread_id: Optional[str] = Field(
+        "default_session", 
+        examples=["5511999998888"], 
+        description="Identificador único da sessão/conversa (ex: WhatsApp do cliente)."
+    )
 
 class ChatResponse(BaseModel):
     tenant_id: str = Field(..., description="O ID do cliente que processou a requisição.")
     status: str = Field(..., description="Status da execução do motor")
-    response: str = Field(...,description="Resposta limpa gerada pelo Grafo de Estados")
-
+    response: str = Field(..., description="Resposta limpa gerada pelo Grafo de Estados")

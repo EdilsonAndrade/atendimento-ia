@@ -1,4 +1,5 @@
 # modules/ia/agent_graph.py
+import psycopg
 from typing import TypedDict, Annotated, Sequence
 from langchain_ollama import ChatOllama
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
@@ -6,6 +7,9 @@ from langchain_core.runnables import RunnableConfig  # IMPORTANTE: Para receber 
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END
 from modules.vetorizacao.vector_manager import VectorManager
+from langgraph.checkpoint.postgres import PostgresSaver
+
+DB_URI = "postgresql://postgres:2765581@localhost:5432/simplificandoai"
 
 # ============================================================================
 # PASSO 1: ESTRUTURA DO ESTADO (O "Quadro Negro" Compartilhado)
@@ -27,7 +31,6 @@ class AgentState(TypedDict):
 # ============================================================================
 
 # Inicializamos o modelo local Llama 3 (temperature=0 para decisões lógicas)
-# Alterado para "llama3.1" que é a versão ativa detectada em seu ambiente local
 llm = ChatOllama(model="llama3.1", temperature=0)
 
 def routing_agent(state: AgentState, config: RunnableConfig):
@@ -45,8 +48,8 @@ def routing_agent(state: AgentState, config: RunnableConfig):
     system_prompt = (
         "You are an orchestrator router. Analyze the conversation history and the last user message.\n"
         "Your job is to classify the user's intent into one of these categories:\n"
-        "1. 'OPERATIONAL': If the user wants to book, reschedule, cancel, check available time slots, or ask about business hours/barbers.\n"
-        "2. 'INSTITUTIONAL': If the user is asking about professional experience, resumes, company history, or contracts.\n"
+        "1. 'OPERATIONAL': If the user wants to book, reschedule, cancel, check available time slots, ask about prices, services, or barbers.\n"
+        "2. 'INSTITUTIONAL': If the user is asking about professional experience, resumes, company history, address, or general rules.\n"
         "3. 'CHITCHAT': If it's just a greeting, goodbye, or general casual talk.\n\n"
         "CRITICAL: Reply with EXACTLY one word: either 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'. Do not add punctuation or explanation."
     )
@@ -60,8 +63,7 @@ def routing_agent(state: AgentState, config: RunnableConfig):
     
     print(f" -> IA decidiu que a intenção é: [{decisao}]")
     
-    # 4. Retornamos um dicionário. 
-    # O LangGraph vai pegar essa nova mensagem da IA (o veredito) e anexar ao nosso Estado automaticamente.
+    # 4. Retornamos um dicionário com a decisão do roteador
     return {"messages": [AIMessage(content=f"Routing decision: {decisao}")]}
 
 
@@ -73,7 +75,6 @@ def route_decision(state: AgentState):
     Função que lê a decisão tomada pelo 'routing_agent' 
     e retorna o nome do próximo caminho que o grafo deve seguir.
     """
-    
     print("\n --- [ARESTA CONDICIONAL] Calculando próximo nó do grafo... ---")
     # 1. Pegamos a última mensagem que o routing_agent salvou no estado
     ultima_mensagem = state["messages"][-1].content
@@ -93,31 +94,27 @@ def route_decision(state: AgentState):
     
 
 # ============================================================================
-# PASSO 4: NÓ DE DADOS INSTITUCIONAIS (Busca Dinâmica em PDFs)
+# PASSO 4: NÓ DE DADOS INSTITUCIONAIS (Busca Dinâmica no RAG + Histórico)
 # ============================================================================
 def institutional_node(state: AgentState, config: RunnableConfig):
     """
-    Nó (Node) responsável por buscar informações no banco institucional (PDFs)
-    e responder à dúvida do usuário com base no contexto encontrado.
-    Este nó é dinâmico e busca o banco de dados baseado no tenant_id fornecido.
+    Nó responsável por buscar informações no banco institucional/geral
+    e responder à dúvida do usuário mantendo o contexto do histórico.
     """
-    print("\n --- [NÓ: institutional_node] Buscando nos PDFs institucionais... ---")
+    print("\n --- [NÓ: institutional_node] Buscando na base de conhecimento... ---")
     
-    # ARQUITETURA MULTI-TENANT: Buscamos as variáveis dinâmicas de dentro de RunnableConfig.
-    # Se nenhuma config for passada, ele assume "default_tenant" de forma segura.
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
     
-    # O banco de dados agora é instanciado apontando para a pasta do cliente específico.
-    db_path = f"db/{tenant_id}/institutional_db"
+    db_path = f"db/{tenant_id}/knowledge_db"
     print(f" -> [MULTITENANT] Conectando ao banco de dados do Tenant: '{tenant_id}' em '{db_path}'")
     try:
-        # Instanciamos o VectorManager dinamicamente
         manager = VectorManager(db_directory=db_path)
-    except:
-        return {"messages": [AIMessage(content="Não foi encontrado dados do cliente para resposta")]}
-    # 1. Pegamos a pergunta original do usuário (a primeira mensagem do histórico)
-    # Como as mensagens acumulam, a última mensagem do tipo HumanMessage é a pergunta do usuário.
+    except Exception as e:
+        print(f"Erro ao carregar banco: {e}")
+        return {"messages": [AIMessage(content="Não foram encontrados dados do cliente para formular a resposta.")]}
+        
+    # 1. Pegamos a pergunta original do usuário (última mensagem Human)
     pergunta_usuario = ""
     for msg in reversed(state["messages"]):
         if msg.type == "human":
@@ -126,43 +123,47 @@ def institutional_node(state: AgentState, config: RunnableConfig):
 
     print(f" -> Buscando no ChromaDB por: '{pergunta_usuario}'")
     
-    # 2. Executamos a busca real usando o VectorManager (trazendo os 5 melhores resultados)
+    # 2. Busca RAG via MMR
     contexto_encontrado = manager.search_context(pergunta_usuario, num_results=5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
-    # 3. Preparamos o prompt em inglês para a IA consolidar a resposta no idioma correto
+    # 3. Formata o histórico recente de conversas para o LLM lembrar do passado
+    historico_texto = ""
+    for msg in state["messages"][:-1]:  # Pega todas exceto a última que acabamos de enviar
+        if msg.type == "human":
+            historico_texto += f"User: {msg.content}\n"
+        elif msg.type == "ai" and not msg.content.startswith("Routing decision:"):
+            historico_texto += f"Assistant: {msg.content}\n"
+
+    # 4. Prompt com RAG + Histórico de Conversa
     prompt_final = (
-        f"You are an expert assistant. Answer the user's question based strictly on the provided context below.\n"
+        f"You are an expert assistant for the business. Answer the user's question using the provided context below.\n"
+        f"You also have access to the conversation history with this user. Use it if they refer to previous topics.\n"
+        f"CRITICAL GUARDRAIL: If the answer is not in the context or history, state clearly that you do not have that information.\n"
         f"CRITICAL: Detect the language of the user's question and respond EXCLUSIVELY in that same language.\n"
-        f"Do not include any conversational meta-text. Go straight to the answer.\n"
-        f"Provide a complete, polite, and professional answer. Avoid extremely short or dry responses.\n"
-        f"Note: The user might use acronyms (like BSI) for company names that could be spelled out fully (like HBSIS) in the context. Make this connection if it makes sense.\n\n"
-        f"--- CONTEXT ---\n"
+        f"Provide a complete, polite, and professional answer.\n\n"
+        f"--- CONVERSATION HISTORY ---\n"
+        f"{historico_texto}\n\n"
+        f"--- CONTEXT FROM KNOWLEDGE BASE ---\n"
         f"{contexto_formatado}\n\n"
         f"User Question: {pergunta_usuario}"
     )
     
-    # 4. Chamamos o LLM para gerar a resposta baseada no documento
     resposta_ia = llm.invoke(prompt_final)
-    
-    print(" -> Resposta formulada com sucesso!")
-    
-    # 5. Devolvemos a resposta da IA. O LangGraph vai salvar isso no nosso quadro negro.
+    print(" -> Resposta institucional formulada com sucesso!")
     return {"messages": [AIMessage(content=resposta_ia.content)]}
 
 
 # ============================================================================
-# PASSO 5: NÓ DE DADOS OPERACIONAIS (Busca Dinâmica em Planilhas)
+# PASSO 5: NÓ DE DADOS OPERACIONAIS (Busca Dinâmica + Histórico)
 # ============================================================================
 def operational_node(state: AgentState, config: RunnableConfig):
     """
-    Nó (Node) responsável por buscar informações no banco operacional (planilhas)
-    e responder ao usuário sobre horários, barbeiros e preços.
-    Este nó é dinâmico e busca o banco de dados baseado no tenant_id fornecido.
+    Nó responsável por buscar informações operacionais e responder 
+    ao usuário mantendo a memória das conversas anteriores salvas no Postgres.
     """
-    print("\n --- [NÓ: operational_node] Buscando na planilha operacional... ---")
+    print("\n --- [NÓ: operational_node] Buscando na base operacional... ---")
     
-    # ARQUITETURA MULTI-TENANT: Buscamos as variáveis dinâmicas de dentro de RunnableConfig.
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
     
@@ -170,12 +171,12 @@ def operational_node(state: AgentState, config: RunnableConfig):
     print(f" -> [MULTITENANT] Conectando ao banco de dados do Tenant: '{tenant_id}' em '{db_path}'")
     
     try:
-        # Instanciamos o VectorManager dinamicamente
         manager = VectorManager(db_directory=db_path)
-    except:
-        return {"messages": [AIMessage(content="Não foi encontrado dados do cliente para resposta")]}
+    except Exception as e:
+        print(f"Erro ao carregar banco: {e}")
+        return {"messages": [AIMessage(content="Não foram encontrados dados do cliente para formular a resposta.")]}
     
-    # 1. Pegamos a pergunta original do usuário no histórico
+    # 1. Pegamos a pergunta original do usuário
     pergunta_usuario = ""
     for msg in reversed(state["messages"]):
         if msg.type == "human":
@@ -184,26 +185,36 @@ def operational_node(state: AgentState, config: RunnableConfig):
 
     print(f" -> Buscando no ChromaDB por: '{pergunta_usuario}'")
     
-    # 2. Buscamos as linhas da planilha convertidas em vetor (trazendo até 5 resultados)
+    # 2. Busca no RAG
     contexto_encontrado = manager.search_context(pergunta_usuario, num_results=5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
-    # 3. Prompt estruturado em inglês para a IA consolidar os dados da tabela
+    # 3. Formata o histórico recente de conversas para o LLM lembrar do passado
+    historico_texto = ""
+    for msg in state["messages"][:-1]:  # Pega todas exceto a última que acabamos de enviar
+        if msg.type == "human":
+            historico_texto += f"User: {msg.content}\n"
+        elif msg.type == "ai" and not msg.content.startswith("Routing decision:"):
+            historico_texto += f"Assistant: {msg.content}\n"
+
+    # 4. Prompt com RAG + Equivalências Semânticas + Histórico de Memória
     prompt_final = (
-        f"You are an expert booking assistant. Answer the user's question based strictly on the provided context below.\n"
+        f"You are an expert booking assistant for the business. Answer the user's question using the provided context and conversation history.\n"
+        f"IMPORTANT: Use the Conversation History to recall previous agreements, questions, or choices made by the user in this session.\n"
+        f"IMPORTANT: Understand semantic equivalences naturally (e.g., 'fazer a unha' refers to 'Manicure', 'fazer barba' refers to 'Barba Terapia' or 'Barba Express').\n"
+        f"CRITICAL GUARDRAIL: Do NOT invent prices, times, or services that are completely absent from the context or history.\n"
         f"CRITICAL: Detect the language of the user's question and respond EXCLUSIVELY in that same language.\n"
-        f"Do not include any conversational meta-text. Go straight to the answer.\n"
-        f"Provide a complete, polite, and professional answer. Avoid extremely short or dry responses.\n\n"
-        f"--- CONTEXT ---\n"
+        f"Provide a complete, polite, and professional answer.\n\n"
+        f"--- CONVERSATION HISTORY ---\n"
+        f"{historico_texto}\n\n"
+        f"--- CONTEXT FROM KNOWLEDGE BASE ---\n"
         f"{contexto_formatado}\n\n"
         f"User Question: {pergunta_usuario}"
     )
     
     resposta_ia = llm.invoke(prompt_final)
-    
-    print(" -> Resposta operacional formulada!")
+    print(" -> Resposta operacional formulada com sucesso!")
     return {"messages": [AIMessage(content=resposta_ia.content)]}
-
 
 # ============================================================================
 # PASSO 6: NÓ DE CONVERSAS CASUAIS (Chitchat)
@@ -215,22 +226,20 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
     """
     print("\n --- [NÓ: chitchat_node] Processando conversa casual... ---")
     
-    # 1. Pegamos o histórico recente
     historico = list(state["messages"])
     
-    # 2. Prompt instruindo o Llama a ser acolhedor e se posicionar como assistente corporativo
     prompt_casual = (
-        "You are an AI assistant for a corporate SaaS application.\n"
+        "You are an AI assistant for a business SaaS application.\n"
         "Respond politely, friendly and naturally to the user's message.\n"
         "CRITICAL: Detect the language of the user's message and respond in the same language.\n"
-        "At the end of your message, gently remind the user that you can help them book an appointment or answer business-related questions.\n"
-        "Do not invent any facts about schedules or documents here."
+        "At the end of your message, gently remind the user that you can help them book an appointment, check prices, or answer business-related questions.\n"
+        "CRITICAL GUARDRAIL: Do not invent any business hours, prices, or addresses here."
     )
     
     mensagens_para_ia = [AIMessage(content=prompt_casual)] + historico
     resposta_ia = llm.invoke(mensagens_para_ia)
     
-    print(" -> Resposta casual gerada!")
+    print(" -> Resposta casual gerada com sucesso!")
     return {"messages": [AIMessage(content=resposta_ia.content)]}
 
 
@@ -238,23 +247,19 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
 # PASSO 7: CONSTRUÇÃO E COMPILAÇÃO DO GRAFO (Fiação do LangGraph)
 # ============================================================================
 
-# 1. Inicializamos o construtor do Grafo passando o contrato de Estado que criamos no Passo 1
+# 1. Inicializamos o construtor do Grafo passando o contrato de Estado
 builder = StateGraph(AgentState)
 
 # 2. Registramos todos os nossos Nós (Nodes) no grafo
-# O primeiro argumento é o ID ("apelido") do nó, e o segundo é a função pura que criamos
 builder.add_node("routing_agent", routing_agent)
 builder.add_node("institutional_node", institutional_node)
 builder.add_node("operational_node", operational_node)
 builder.add_node("chitchat_node", chitchat_node)
 
-# 3. Definimos o Ponto de Entrada do sistema.
-# Toda vez que enviarmos uma pergunta ao grafo, ela baterá primeiro no roteador.
+# 3. Definimos o Ponto de Entrada do sistema
 builder.set_entry_point("routing_agent")
 
-# 4. Criamos a Aresta Condicional (Conditional Edge) saindo do roteador.
-# Ela diz: "Ao terminar o 'routing_agent', chame a função 'route_decision' para avaliar o estado.
-# Dependendo do que ela retornar, vá para um dos três nós correspondentes."
+# 4. Criamos a Aresta Condicional (Conditional Edge) saindo do roteador
 builder.add_conditional_edges(
     "routing_agent",
     route_decision,
@@ -265,15 +270,31 @@ builder.add_conditional_edges(
     }
 )
 
-# 5. Definimos as Arestas Normais (as saídas de cada estação).
-# Quando qualquer um dos nós de resposta terminar o seu trabalho, o fluxo deve ir para o FIM (END).
+# 5. Definimos as Arestas Normais (as saídas de cada estação para o Fim)
 builder.add_edge("institutional_node", END)
 builder.add_edge("operational_node", END)
 builder.add_edge("chitchat_node", END)
 
-# 6. Compilamos o Grafo! 
-# O 'app' agora é o nosso agente inteligente unificado pronto para ser executado.
-app = builder.compile()
+
+def get_compiled_graph():
+    """
+    Instancia o Pool de conexões do PostgreSQL e compila o Grafo 
+    usando o PostgresSaver para persistência real do histórico.
+    """
+    connection_kwargs = {
+        "autocommit": True,
+        "prepare_threshold": 0,
+    }
+    
+    # Estabelece a conexão com o PostgreSQL para o Checkpointer
+    conn = psycopg.connect(DB_URI, **connection_kwargs)
+    checkpointer = PostgresSaver(conn)
+    
+    # Cria automaticamente as tabelas do LangGraph no Postgres se não existirem
+    checkpointer.setup()
+    
+    # Compila e retorna o grafo com memória persistente
+    return builder.compile(checkpointer=checkpointer)
 
 
 # ============================================================================
@@ -284,10 +305,11 @@ if __name__ == "__main__":
     print(" INICIALIZANDO SINCRO-AGENTE DINÂMICO (MULTI-TENANT)")
     print("=" * 60)
 
-    # Simulação: O usuário faz uma pergunta
-    pergunta_teste = "Qual o nome completo do Edilson e qual a experiência dele na BSI? E qual a última empresa que ele trabalhou?"
+    # Compilamos o grafo com o PostgresSaver
+    app_graph = get_compiled_graph()
+
+    pergunta_teste = "Quero cortar o cabelo e fazer a unha na quinta-feira às 16h, é possível? E qual o preço do Corte Degradê?"
     
-    # 1. Estado Inicial
     estado_inicial = {
         "messages": [HumanMessage(content=pergunta_teste)],
         "current_date": "",
@@ -295,25 +317,23 @@ if __name__ == "__main__":
         "alternatives_suggested": []
     }
 
-    # 2. Configuração Dinâmica (O FastAPI passaria isso dinamicamente dependendo do usuário autenticado)
-    # ATENÇÃO: Para simular o teste local mantendo seus dados, lembre-se de criar a estrutura de pastas:
-    # 'db/interasis_barber/kwnoledge_db
+    # IMPORTANTE: O PostgresSaver exige 'thread_id' para saber em qual linha do banco gravar!
     configuracao_requisicao = {
         "configurable": {
-            "tenant_id": "interasis_barber"
+            "tenant_id": "interasis_barber",
+            "thread_id": "sessao_teste_123"
         }
     }
 
     print(f"\nDisparando pergunta ao Grafo para o Tenant [{configuracao_requisicao['configurable']['tenant_id']}]:")
     print(f" -> Pergunta: '{pergunta_teste}'")
     
-    # Executando o grafo passando o dicionário de configurações (segundo parâmetro)
-    resultado = app.invoke(estado_inicial, configuracao_requisicao)
+    # Executando o grafo persistido
+    resultado = app_graph.invoke(estado_inicial, configuracao_requisicao)
 
     print("\n" + "=" * 60)
     print(" FLUXO DO GRAFO FINALIZADO COM SUCESSO!")
     print("=" * 60)
     
-    # Pegamos a última mensagem salva no estado final (que é a resposta da IA)
     resposta_final = resultado["messages"][-1].content
     print(f"\n🤖 RESPOSTA FINAL DO AGENTE:\n{resposta_final}\n")
