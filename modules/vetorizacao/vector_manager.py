@@ -16,21 +16,33 @@ class VectorManager:
         
         if os.path.exists(self.db_directory):
             self.db = Chroma(persist_directory=self.db_directory, embedding_function=self.embeddings)
-        else:
-            print(f"O caminho de informações {self.db_directory} do Tenant não existe")
-            raise ValueError(f"O caminho de informações {self.db_directory} do Tenant não existe")
+        
 
     def save_documents(self, texts: list):
         """
-        Converts texts into vectors and saves them to disk.
+        Converte textos em vetores e adiciona de forma incremental ao banco em disco,
+        evitando sobrescritas destrutivas.
         """
-        print(f"Vectorizing and saving {len(texts)} chunks into '{self.db_directory}'...")
-        self.db = Chroma.from_texts(
-            texts=texts,
-            embedding=self.embeddings,
-            persist_directory=self.db_directory
-        )
-        print("Vector database created successfully on disk!")
+
+        print(f"Preparando persistência para {len(texts)} chunks em '{self.db_directory}'...")
+
+        # Se o banco já existe em disco, nós apenas carregamos a instância existente
+        if os.path.exists(self.db_directory) and os.listdir(self.db_directory):
+            self.db = Chroma(
+                persist_directory=self.db_directory,
+                embedding_function=self.embeddings
+            )
+            # Adiciona os novos textos de forma incremental à coleção existente
+            self.db.add_texts(texts=texts)
+            print("Dados adicionados de forma incremental com sucesso!")
+        else:
+            # Se o banco não existe, cria a estrutura inicial do zero
+            self.db = Chroma.from_texts(
+                texts=texts,
+                embedding=self.embeddings,
+                persist_directory=self.db_directory
+            )
+            print("Banco de dados vetorial inicial criado com sucesso no disco!")
 
     def search_context(self, query: str, num_results: int = 5):
         """

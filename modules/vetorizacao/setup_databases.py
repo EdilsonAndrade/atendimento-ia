@@ -108,12 +108,12 @@ def initialize_tenant_data(tenant_id: str, pdf_path: str = None, excel_path: str
 if __name__ == "__main__":
     # CONFIGURAÇÃO DOS CAMINHOS DOS SEUS ARQUIVOS BRUTOS DE TESTE
     # Ajuste os nomes e caminhos aqui abaixo se os seus arquivos originais tiverem nomes diferentes!
-    ID_CLIENTE_TESTE = "interasis_barber"
-    CAMINHO_CURRICULO = "data/curriculum.pdf"  # Onde está o seu PDF original
-    CAMINHO_PLANILHA = "data/Agenda de Horários - Barbearia (Exemplo).xlsx"   # Onde está o seu Excel original
+    ID_CLIENTE_TESTE = "987654"
+    CAMINHO_TXT = "data/temp/987654/regras_api.txt"  # Onde está o seu PDF original
+    
 
     initialize_tenant_data(
         tenant_id=ID_CLIENTE_TESTE,
-        pdf_path=CAMINHO_CURRICULO,
-        excel_path=CAMINHO_PLANILHA
+        txt_path=CAMINHO_TXT,
+    
     )
