@@ -1,16 +1,24 @@
 # modules/ia/agent_graph.py
 import psycopg
+import os
 from typing import TypedDict, Annotated, Sequence
-from langchain_ollama import ChatOllama
-from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig  # IMPORTANTE: Para receber as configs dinâmicas do FastAPI
 from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph import StateGraph, END
 from modules.vetorizacao.vector_manager import VectorManager
 from langgraph.checkpoint.postgres import PostgresSaver
+from modules.agendamento.booking_tools import confirmar_agendamento
+from dotenv import load_dotenv
+from datetime import datetime
 
-DB_URI = "postgresql://postgres:2765581@localhost:5432/simplificandoai"
+load_dotenv()
 
+DB_URI = os.getenv("POSTGRES_DATABASE_URI","postgresql://postgres:2765581@localhost:5432/simplificandoai")
+llm_model = os.getenv("LLM", "llama3.3")
+print(f"Acessando o banco {DB_URI}")
 # ============================================================================
 # PASSO 1: ESTRUTURA DO ESTADO (O "Quadro Negro" Compartilhado)
 # ============================================================================
@@ -26,44 +34,71 @@ class AgentState(TypedDict):
     alternatives_suggested: list  # Lista de horários alternativos que oferecemos a ele
     
 
+
 # ============================================================================
 # PASSO 2: CRIAÇÃO DO PRIMEIRO NÓ (O Agente Roteador)
 # ============================================================================
 
 # Inicializamos o modelo local Llama 3 (temperature=0 para decisões lógicas)
-llm = ChatOllama(model="llama3.1", temperature=0)
+llm = ChatOpenAI(model=llm_model, temperature=0)
 
+# Vincula a Tool de agendamento ao modelo Llama 3.1
+tools = [confirmar_agendamento]
+
+llm_with_tools = llm.bind_tools(tools)
+
+# ============================================================================
+# PASSO 3: NÓ ROTEADOR COM GUARDRAIL DE CONTEXTO DUAL (routing_agent)
+# ============================================================================
 def routing_agent(state: AgentState, config: RunnableConfig):
     """
-    Nó (Node) responsável por analisar a conversa e decidir o próximo passo do fluxo.
-    Note que ele agora aceita 'config' na assinatura para manter a padronização,
-    mesmo que a decisão de roteamento ainda não dependa do tenant do banco.
+    Classifica a intenção combinando Guardrail de estado (respostas a perguntas anteriores)
+    e envio de histórico nativo para o GPT-4o-mini.
     """
-    print("\n --- [NÓ: routing_agent] IA analisando a intenção do usuário... ---")
+    print("\n --- [NÓ: routing_agent] GPT-4o-mini analisando a intenção do usuário... ---")
     
-    # 1. Pegamos o histórico de mensagens que está no quadro negro
-    historico_mensagens = state["messages"]
+    # 1. Filtra as mensagens reais do chat
+    historico_limpo = [
+        m for m in state["messages"] 
+        if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
+    ]
     
-    # 2. Criamos uma instrução rígida para o LLM atuar como um roteador de arquitetura
-    system_prompt = (
-        "You are an orchestrator router. Analyze the conversation history and the last user message.\n"
-        "Your job is to classify the user's intent into one of these categories:\n"
-        "1. 'OPERATIONAL': If the user wants to book, reschedule, cancel, check available time slots, ask about prices, services, or barbers.\n"
-        "2. 'INSTITUTIONAL': If the user is asking about professional experience, resumes, company history, address, or general rules.\n"
-        "3. 'CHITCHAT': If it's just a greeting, goodbye, or general casual talk.\n\n"
-        "CRITICAL: Reply with EXACTLY one word: either 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'. Do not add punctuation or explanation."
-    )
+    # GUARDRAIL AUTOMÁTICO: Se a IA fez uma pergunta operacional na mensagem anterior
+    # (ex: pediu horário, barbeiro, confirmação), a resposta do usuário É OPERACIONAL.
+    if len(historico_limpo) >= 2:
+        ultima_msg_ia = str(historico_limpo[-2].content).lower() if historico_limpo[-2].type == "ai" else ""
+        gatilhos_operacionais = ["horário", "horario", "barbeiro", "profissional", "serviço", "servico", "agendar", "data", "dia"]
+        
+        if any(gatilho in ultima_msg_ia for gatilho in gatilhos_operacionais):
+            print(" -> 🛡️ Guardrail Ativo: Usuário está respondendo a uma pergunta de agendamento. Forçando OPERATIONAL!")
+            return {"messages": [AIMessage(content="Routing decision: OPERATIONAL")]}
+
+    # 2. Se não caiu no guardrail, aciona o GPT-4o-mini passando as mensagens nativas
+    system_prompt = SystemMessage(content=(
+        "You are an orchestrator router for a business booking application.\n"
+        "Classify the intent of the user's latest response based on the conversation context.\n\n"
+        "CLASSIFICATION RULES:\n"
+        "1. 'OPERATIONAL': The user wants to book, reschedule, cancel, or is answering a question about a booking "
+        "(e.g., providing a barber name, time, date, service, or confirmation).\n"
+        "2. 'INSTITUTIONAL': Questions about company address, policies, rules, or general info.\n"
+        "3. 'CHITCHAT': ONLY standalone greetings ('olá', 'tudo bem'), farewells, or off-topic talk.\n\n"
+        "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'."
+    ))
     
-    # Preparamos a lista de mensagens para enviar ao Llama, incluindo o nosso prompt de sistema
-    mensagens_para_ia = [AIMessage(content=system_prompt)] + list(historico_mensagens)
+    # Monta o array com as mensagens reais no formato nativo da OpenAI
+    mensagens_para_ia = [system_prompt] + historico_limpo[-6:]
     
-    # 3. Chamamos o Llama 3.1
     resposta = llm.invoke(mensagens_para_ia)
     decisao = resposta.content.strip().upper()
     
-    print(f" -> IA decidiu que a intenção é: [{decisao}]")
+    if "OPERATIONAL" in decisao:
+        decisao = "OPERATIONAL"
+    elif "INSTITUTIONAL" in decisao:
+        decisao = "INSTITUTIONAL"
+    else:
+        decisao = "CHITCHAT"
     
-    # 4. Retornamos um dicionário com a decisão do roteador
+    print(f" -> Roteador definiu a intenção: [{decisao}]")
     return {"messages": [AIMessage(content=f"Routing decision: {decisao}")]}
 
 
@@ -157,83 +192,118 @@ def institutional_node(state: AgentState, config: RunnableConfig):
 # ============================================================================
 # PASSO 5: NÓ DE DADOS OPERACIONAIS (Busca Dinâmica + Histórico)
 # ============================================================================
+# ============================================================================
+# PASSO 5: NÓ OPERACIONAL UNIFICADO (Raciocínio Autônomo com GPT-4o-mini)
+# ============================================================================
 def operational_node(state: AgentState, config: RunnableConfig):
     """
-    Nó responsável por buscar informações operacionais e responder 
-    ao usuário mantendo a memória das conversas anteriores salvas no Postgres.
+    Nó Operacional Unificado. O GPT-4o-mini decide autonomamente se deve:
+    1. Executar a tool 'confirmar_agendamento' (caso tenha todos os dados);
+    2. Fazer perguntas em português para coletar dados faltantes (nome, e-mail, horário, etc);
+    3. Responder a dúvidas de serviços e preços usando o RAG.
     """
-    print("\n --- [NÓ: operational_node] Buscando na base operacional... ---")
+    print("\n --- [NÓ: operational_node] GPT-4o-mini avaliando fluxo de atendimento... ---")
     
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
     
     db_path = f"db/{tenant_id}/knowledge_db"
-    print(f" -> [MULTITENANT] Conectando ao banco de dados do Tenant: '{tenant_id}' em '{db_path}'")
     
     try:
         manager = VectorManager(db_directory=db_path)
     except Exception as e:
         print(f"Erro ao carregar banco: {e}")
-        return {"messages": [AIMessage(content="Não foram encontrados dados do cliente para formular a resposta.")]}
+        return {"messages": [AIMessage(content="Não foram encontrados dados do cliente.")]}
     
-    # 1. Pegamos a pergunta original do usuário
+    # Extract last user message
     pergunta_usuario = ""
     for msg in reversed(state["messages"]):
         if msg.type == "human":
             pergunta_usuario = msg.content
             break
 
-    print(f" -> Buscando no ChromaDB por: '{pergunta_usuario}'")
-    
-    # 2. Busca no RAG
+    # RAG Search
     contexto_encontrado = manager.search_context(pergunta_usuario, num_results=5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
-    # 3. Formata o histórico recente de conversas para o LLM lembrar do passado
+    # Conversation History
     historico_texto = ""
-    for msg in state["messages"][:-1]:  # Pega todas exceto a última que acabamos de enviar
+    for msg in state["messages"][:-1]:
         if msg.type == "human":
             historico_texto += f"User: {msg.content}\n"
-        elif msg.type == "ai" and not msg.content.startswith("Routing decision:"):
+        elif msg.type == "ai" and not str(msg.content).startswith("Routing decision:"):
             historico_texto += f"Assistant: {msg.content}\n"
+    now = datetime.now()
 
-    # 4. Prompt com RAG + Equivalências Semânticas + Histórico de Memória
-    prompt_final = (
-        f"You are an expert booking assistant for the business. Answer the user's question using the provided context and conversation history.\n"
-        f"IMPORTANT: Use the Conversation History to recall previous agreements, questions, or choices made by the user in this session.\n"
-        f"IMPORTANT: Understand semantic equivalences naturally (e.g., 'fazer a unha' refers to 'Manicure', 'fazer barba' refers to 'Barba Terapia' or 'Barba Express').\n"
-        f"CRITICAL GUARDRAIL: Do NOT invent prices, times, or services that are completely absent from the context or history.\n"
-        f"CRITICAL: Detect the language of the user's question and respond EXCLUSIVELY in that same language.\n"
-        f"Provide a complete, polite, and professional answer.\n\n"
+    # Format to dd/mm/yyyy
+    formatted_datetime = now.strftime("%d/%m/%Y %H:%M")
+    data_hoje = formatted_datetime;
+    
+
+    system_prompt = (
+        f"You are an intelligent booking assistant for the business (Tenant ID: '{tenant_id}').\n"
+        f"Today's date and time is {data_hoje} .\n\n"
+        f"YOUR RESPONSIBILITIES:\n"
+        f"1. Help the user answer questions about services, prices, and barbers using the KNOWLEDGE BASE CONTEXT.\n"
+        f"2. Complete appointment bookings using the 'confirmar_agendamento' tool.\n\n"
+        f"3. When pass the available times always pass the time after TODAY's date and time {data_hoje}"
+        f"TOOL EXECUTION CRITICAL RULE:\n"
+        f"- You MUST ONLY call the 'confirmar_agendamento' tool if you have ALL of the following parameters confirmed:\n"
+        f"  • tenant_id: '{tenant_id}'\n"
+        f"  • cliente_nome (Customer's full name)\n"
+        f"  • cliente_email (Customer's e-mail address)\n"
+        f"  • servico (Requested service name, e.g., 'Barba Terapia', 'Corte Degradê')\n"
+        f"  • profissional (Barber name, e.g., 'Daniel')\n"
+        f"  • email_profissional (Professional's email found in Knowledge Base Context)\n"
+        f"  • data_agendamento (Date in YYYY-MM-DD format)\n"
+        f"  • horario (Time in HH:MM format)\n\n"
+        f"MISSING INFORMATION RULE:\n"
+        f"- If ANY required field is missing (e.g., missing email, missing customer name, missing time/horario, or missing date), "
+        f" OR the time that THE USER wants is less than the current date time {data_hoje}, only if is after and available"
+        f"DO NOT call the tool.\n"
+        f"- Instead, politely ask the user in Portuguese for the missing item(s) OR another available based on the context. If time or date is missing, suggest available slots based on context.\n"
+        f"- Always respond in natural Portuguese (Brazil).\n\n"
         f"--- CONVERSATION HISTORY ---\n"
         f"{historico_texto}\n\n"
-        f"--- CONTEXT FROM KNOWLEDGE BASE ---\n"
-        f"{contexto_formatado}\n\n"
-        f"User Question: {pergunta_usuario}"
+        f"--- KNOWLEDGE BASE CONTEXT ---\n"
+        f"{contexto_formatado}"
     )
-    
-    resposta_ia = llm.invoke(prompt_final)
-    print(" -> Resposta operacional formulada com sucesso!")
-    return {"messages": [AIMessage(content=resposta_ia.content)]}
 
+    # Invocamos o LLM com as ferramentas acopladas usando SystemMessage + HumanMessage
+    mensagens_para_ia = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=pergunta_usuario)
+    ]
+    
+    resposta_ia = llm_with_tools.invoke(mensagens_para_ia)
+    
+    if hasattr(resposta_ia, 'tool_calls') and resposta_ia.tool_calls:
+        print(f" -> 🚀 TOOL CALL DISPARADO AUTONOMAMENTE: {resposta_ia.tool_calls}")
+    else:
+        print(" -> GPT-4o-mini solicitou dados faltantes ou respondeu dúvida via chat.")
+
+    return {"messages": [resposta_ia]}
 # ============================================================================
 # PASSO 6: NÓ DE CONVERSAS CASUAIS (Chitchat)
 # ============================================================================
 def chitchat_node(state: AgentState, config: RunnableConfig):
     """
-    Nó (Node) responsável por lidar de forma simpática com saudações,
-    despedidas ou interações que não exigem busca em bancos de dados.
+    Nó de conversa casual simples e direta.
     """
     print("\n --- [NÓ: chitchat_node] Processando conversa casual... ---")
     
-    historico = list(state["messages"])
+    # Filtra histórico limpando decisões do roteador
+    historico = [
+        m for m in state["messages"] 
+        if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
+    ]
     
     prompt_casual = (
-        "You are an AI assistant for a business SaaS application.\n"
-        "Respond politely, friendly and naturally to the user's message.\n"
-        "CRITICAL: Detect the language of the user's message and respond in the same language.\n"
-        "At the end of your message, gently remind the user that you can help them book an appointment, check prices, or answer business-related questions.\n"
-        "CRITICAL GUARDRAIL: Do not invent any business hours, prices, or addresses here."
+        "You are a friendly AI assistant for a business SaaS.\n"
+        "Respond politely and naturally to the user's message.\n"
+        "CRITICAL: Detect the language of the user's message and respond in that same language.\n"
+        "Gently remind them that you can help with booking appointments or answering questions about services.\n"
+        "Do NOT invent any prices or business hours."
     )
     
     mensagens_para_ia = [AIMessage(content=prompt_casual)] + historico
@@ -250,11 +320,15 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
 # 1. Inicializamos o construtor do Grafo passando o contrato de Estado
 builder = StateGraph(AgentState)
 
-# 2. Registramos todos os nossos Nós (Nodes) no grafo
+# Registra os nós principais
 builder.add_node("routing_agent", routing_agent)
 builder.add_node("institutional_node", institutional_node)
 builder.add_node("operational_node", operational_node)
 builder.add_node("chitchat_node", chitchat_node)
+
+# Registra o nó executor de Tools do LangGraph
+tool_node = ToolNode(tools=tools)
+builder.add_node("tools", tool_node)
 
 # 3. Definimos o Ponto de Entrada do sistema
 builder.set_entry_point("routing_agent")
@@ -270,9 +344,19 @@ builder.add_conditional_edges(
     }
 )
 
+# Aresta condicional para o nó operacional: se o LLM gerou chamada de tool, vai para 'tools', senão vai para END
+builder.add_conditional_edges(
+    "operational_node",
+    tools_condition,
+    {
+        "tools": "tools",
+        END: END
+    }
+)
+
 # 5. Definimos as Arestas Normais (as saídas de cada estação para o Fim)
+builder.add_edge("tools", END)
 builder.add_edge("institutional_node", END)
-builder.add_edge("operational_node", END)
 builder.add_edge("chitchat_node", END)
 
 
