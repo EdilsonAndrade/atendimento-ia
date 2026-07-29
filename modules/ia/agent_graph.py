@@ -11,6 +11,7 @@ from langgraph.graph import StateGraph, END
 from modules.vetorizacao.vector_manager import VectorManager
 from langgraph.checkpoint.postgres import PostgresSaver
 from modules.agendamento.booking_tools import confirmar_agendamento
+from modules.agendamento.agenda_tool import consultar_horarios_disponiveis
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -43,7 +44,7 @@ class AgentState(TypedDict):
 llm = ChatOpenAI(model=llm_model, temperature=0)
 
 # Vincula a Tool de agendamento ao modelo Llama 3.1
-tools = [confirmar_agendamento]
+tools = [consultar_horarios_disponiveis, confirmar_agendamento]
 
 llm_with_tools = llm.bind_tools(tools)
 
@@ -198,9 +199,10 @@ def institutional_node(state: AgentState, config: RunnableConfig):
 def operational_node(state: AgentState, config: RunnableConfig):
     """
     Nó Operacional Unificado. O GPT-4o-mini decide autonomamente se deve:
-    1. Executar a tool 'confirmar_agendamento' (caso tenha todos os dados);
-    2. Fazer perguntas em português para coletar dados faltantes (nome, e-mail, horário, etc);
-    3. Responder a dúvidas de serviços e preços usando o RAG.
+    1. Executar a tool 'consultar_horarios_disponiveis' pra verificar agenda do profissional (caso tenha os dados necessários)
+    2. Executar a tool 'confirmar_agendamento' (caso tenha todos os dados);
+    3. Fazer perguntas em português para coletar dados faltantes (nome, e-mail, horário, etc);
+    4. Responder a dúvidas de serviços e preços usando o RAG.
     """
     print("\n --- [NÓ: operational_node] GPT-4o-mini avaliando fluxo de atendimento... ---")
     
@@ -235,33 +237,29 @@ def operational_node(state: AgentState, config: RunnableConfig):
             historico_texto += f"Assistant: {msg.content}\n"
     now = datetime.now()
 
-    # Format to dd/mm/yyyy
-    formatted_datetime = now.strftime("%d/%m/%Y %H:%M")
-    data_hoje = formatted_datetime;
-    
+    data_hoje_iso = now.strftime("%Y-%m-%d")    # Ex: "2026-07-29"
+    hora_atual_str = now.strftime("%H:%M")       # Ex: "19:35"
+    data_formatada_br = now.strftime("%d/%m/%Y") # Ex: "29/07/2026"
 
     system_prompt = (
         f"You are an intelligent booking assistant for the business (Tenant ID: '{tenant_id}').\n"
-        f"Today's date and time is {data_hoje} .\n\n"
+        f"Today is {data_formatada_br} ({data_hoje_iso}) and current time is {hora_atual_str}.\n\n"
         f"YOUR RESPONSIBILITIES:\n"
-        f"1. Help the user answer questions about services, prices, and barbers using the KNOWLEDGE BASE CONTEXT.\n"
-        f"2. Complete appointment bookings using the 'confirmar_agendamento' tool.\n\n"
-        f"3. When pass the available times always pass the time after TODAY's date and time {data_hoje}"
-        f"TOOL EXECUTION CRITICAL RULE:\n"
-        f"- You MUST ONLY call the 'confirmar_agendamento' tool if you have ALL of the following parameters confirmed:\n"
-        f"  • tenant_id: '{tenant_id}'\n"
-        f"  • cliente_nome (Customer's full name)\n"
-        f"  • cliente_email (Customer's e-mail address)\n"
-        f"  • servico (Requested service name, e.g., 'Barba Terapia', 'Corte Degradê')\n"
-        f"  • profissional (Barber name, e.g., 'Daniel')\n"
-        f"  • email_profissional (Professional's email found in Knowledge Base Context)\n"
-        f"  • data_agendamento (Date in YYYY-MM-DD format)\n"
-        f"  • horario (Time in HH:MM format)\n\n"
+        f"1. Help the user answer questions about services, prices, and barbers using KNOWLEDGE BASE CONTEXT.\n"
+        f"2. Check availability using 'consultar_horarios_disponiveis' tool.\n"
+        f"3. Complete bookings using 'confirmar_agendamento' tool.\n\n"
+        f"FALLBACK RULE FOR PROFESSIONAL PREFERENCE:\n"
+        f"- If the user says 'tanto faz', 'qualquer um', or does NOT specify a preferred professional:\n"
+        f"  IMMEDIATELY CALL the tool 'consultar_horarios_disponiveis' using 'Daniel' (or the primary professional from Context) "
+        f"  as the 'profissional' parameter for the requested date.\n"
+        f"  DO NOT write conversational promises like 'Vou consultar...' without generating the actual tool call.\n\n"
+        f"TOOL EXECUTION RULES:\n"
+        f"- 'consultar_horarios_disponiveis': Needs tenant_id ('{tenant_id}'), profissional, and data_agendamento (YYYY-MM-DD).\n"
+        f"- 'confirmar_agendamento': MUST HAVE verified availability first and confirmed ALL parameters: "
+        f"tenant_id, cliente_nome, cliente_email, servico, profissional, email_profissional, data_agendamento (YYYY-MM-DD), horario (HH:MM).\n\n"
         f"MISSING INFORMATION RULE:\n"
-        f"- If ANY required field is missing (e.g., missing email, missing customer name, missing time/horario, or missing date), "
-        f" OR the time that THE USER wants is less than the current date time {data_hoje}, only if is after and available"
-        f"DO NOT call the tool.\n"
-        f"- Instead, politely ask the user in Portuguese for the missing item(s) OR another available based on the context. If time or date is missing, suggest available slots based on context.\n"
+        f"- If time/date or user details are missing during booking, ask politely in Portuguese.\n"
+        f"- ONLY offer times AFTER current time {hora_atual_str} if booking for TODAY ({data_hoje_iso}).\n"
         f"- Always respond in natural Portuguese (Brazil).\n\n"
         f"--- CONVERSATION HISTORY ---\n"
         f"{historico_texto}\n\n"
@@ -355,7 +353,7 @@ builder.add_conditional_edges(
 )
 
 # 5. Definimos as Arestas Normais (as saídas de cada estação para o Fim)
-builder.add_edge("tools", END)
+builder.add_edge("tools", "operational_node")
 builder.add_edge("institutional_node", END)
 builder.add_edge("chitchat_node", END)
 
