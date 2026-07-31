@@ -13,7 +13,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from modules.agendamento.booking_tools import confirmar_agendamento
 from modules.agendamento.agenda_tool import consultar_horarios_disponiveis
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -191,18 +191,11 @@ def institutional_node(state: AgentState, config: RunnableConfig):
 
 
 # ============================================================================
-# PASSO 5: NÓ DE DADOS OPERACIONAIS (Busca Dinâmica + Histórico)
-# ============================================================================
-# ============================================================================
-# PASSO 5: NÓ OPERACIONAL UNIFICADO (Raciocínio Autônomo com GPT-4o-mini)
+# PASSO 5: NÓ OPERACIONAL (Corrigido sem Loop Infinito)
 # ============================================================================
 def operational_node(state: AgentState, config: RunnableConfig):
     """
-    Nó Operacional Unificado. O GPT-4o-mini decide autonomamente se deve:
-    1. Executar a tool 'consultar_horarios_disponiveis' pra verificar agenda do profissional (caso tenha os dados necessários)
-    2. Executar a tool 'confirmar_agendamento' (caso tenha todos os dados);
-    3. Fazer perguntas em português para coletar dados faltantes (nome, e-mail, horário, etc);
-    4. Responder a dúvidas de serviços e preços usando o RAG.
+    Nó Operacional que preserva as ToolMessages no estado para evitar Loops Infinitos.
     """
     print("\n --- [NÓ: operational_node] GPT-4o-mini avaliando fluxo de atendimento... ---")
     
@@ -217,70 +210,94 @@ def operational_node(state: AgentState, config: RunnableConfig):
         print(f"Erro ao carregar banco: {e}")
         return {"messages": [AIMessage(content="Não foram encontrados dados do cliente.")]}
     
-    # Extract last user message
+    # Busca a última pergunta do usuário apenas para o RAG
     pergunta_usuario = ""
     for msg in reversed(state["messages"]):
         if msg.type == "human":
             pergunta_usuario = msg.content
             break
 
-    # RAG Search
     contexto_encontrado = manager.search_context(pergunta_usuario, num_results=5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
-    # Conversation History
-    historico_texto = ""
-    for msg in state["messages"][:-1]:
-        if msg.type == "human":
-            historico_texto += f"User: {msg.content}\n"
-        elif msg.type == "ai" and not str(msg.content).startswith("Routing decision:"):
-            historico_texto += f"Assistant: {msg.content}\n"
     now = datetime.now()
+    data_hoje_iso = now.strftime("%Y-%m-%d")
+    data_formatada_br = now.strftime("%d/%m/%Y")
+    hora_atual_str = now.strftime("%H:%M")
 
-    data_hoje_iso = now.strftime("%Y-%m-%d")    # Ex: "2026-07-29"
-    hora_atual_str = now.strftime("%H:%M")       # Ex: "19:35"
-    data_formatada_br = now.strftime("%d/%m/%Y") # Ex: "29/07/2026"
+    # Mapeamento dos dias da semana em português
+    dias_semana_pt = {
+        0: "segunda-feira",
+        1: "terça-feira",
+        2: "quarta-feira",
+        3: "quinta-feira",
+        4: "sexta-feira",
+        5: "sábado",
+        6: "domingo"
+    }
 
-    system_prompt = (
-        f"You are an intelligent booking assistant for the business (Tenant ID: '{tenant_id}').\n"
-        f"Today is {data_formatada_br} ({data_hoje_iso}) and current time is {hora_atual_str}.\n\n"
+    # Monta uma tabela dos próximos 7 dias calculados matematicamente pelo Python
+    tabela_dias = []
+    for i in range(7):
+        dia_calc = now + timedelta(days=i)
+        nome_dia = "hoje" if i == 0 else ("amanhã" if i == 1 else dias_semana_pt[dia_calc.weekday()])
+        data_iso = dia_calc.strftime("%Y-%m-%d")
+        data_br = dia_calc.strftime("%d/%m/%Y")
+        tabela_dias.append(f"• {nome_dia.capitalize()} ({dias_semana_pt[dia_calc.weekday()]}): {data_br} (ISO: '{data_iso}')")
+
+    tabela_calendario_str = "\n".join(tabela_dias)
+
+    system_prompt_str = (
+        f"You are an intelligent booking assistant for the business (Tenant ID: '{tenant_id}').\n\n"
+        f"--- REAL-TIME CALENDAR REFERENCE (NEXT 7 DAYS COMPUTED BY SYSTEM) ---\n"
+        f"{tabela_calendario_str}\n"
+        f"Current Time Today: {hora_atual_str}\n\n"
+        f"CRITICAL DATE MAPPING RULE:\n"
+        f"- When the user specifies a day (e.g., 'hoje', 'amanhã', 'segunda-feira', 'terça-feira', etc.), "
+        f"LOOK UP the corresponding ISO date (YYYY-MM-DD) from the CALENDAR REFERENCE table above.\n"
+        f"- DO NOT perform date calculations yourself. STRICTLY use the exact ISO dates from the table.\n\n"
         f"YOUR RESPONSIBILITIES:\n"
         f"1. Help the user answer questions about services, prices, and barbers using KNOWLEDGE BASE CONTEXT.\n"
         f"2. Check availability using 'consultar_horarios_disponiveis' tool.\n"
         f"3. Complete bookings using 'confirmar_agendamento' tool.\n\n"
         f"FALLBACK RULE FOR PROFESSIONAL PREFERENCE:\n"
         f"- If the user says 'tanto faz', 'qualquer um', or does NOT specify a preferred professional:\n"
-        f"  IMMEDIATELY CALL the tool 'consultar_horarios_disponiveis' using 'Daniel' (or the primary professional from Context) "
-        f"  as the 'profissional' parameter for the requested date.\n"
-        f"  DO NOT write conversational promises like 'Vou consultar...' without generating the actual tool call.\n\n"
+        f"  CALL 'consultar_horarios_disponiveis' using 'Daniel' (or primary professional) for the requested date.\n\n"
         f"TOOL EXECUTION RULES:\n"
         f"- 'consultar_horarios_disponiveis': Needs tenant_id ('{tenant_id}'), profissional, and data_agendamento (YYYY-MM-DD).\n"
-        f"- 'confirmar_agendamento': MUST HAVE verified availability first and confirmed ALL parameters: "
+        f"- MANDATORY DOUBLE-CHECK RULE BEFORE BOOKING:\n"
+        f"  Before executing 'confirmar_agendamento', you MUST ALWAYS execute 'consultar_horarios_disponiveis' "
+        f"  to verify if the requested time slot is STILL available in real-time. If another client booked it in the meantime, "
+        f"  DO NOT call 'confirmar_agendamento', inform the user politely in Portuguese, and suggest other available slots.\n"
+        f"- 'confirmar_agendamento': Call ONLY AFTER real-time availability is re-confirmed and all parameters are present: "
         f"tenant_id, cliente_nome, cliente_email, servico, profissional, email_profissional, data_agendamento (YYYY-MM-DD), horario (HH:MM).\n\n"
         f"MISSING INFORMATION RULE:\n"
         f"- If time/date or user details are missing during booking, ask politely in Portuguese.\n"
         f"- ONLY offer times AFTER current time {hora_atual_str} if booking for TODAY ({data_hoje_iso}).\n"
         f"- Always respond in natural Portuguese (Brazil).\n\n"
-        f"--- CONVERSATION HISTORY ---\n"
-        f"{historico_texto}\n\n"
         f"--- KNOWLEDGE BASE CONTEXT ---\n"
         f"{contexto_formatado}"
     )
 
-    # Invocamos o LLM com as ferramentas acopladas usando SystemMessage + HumanMessage
-    mensagens_para_ia = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=pergunta_usuario)
+    # 1. Filtramos as decisões do roteador das mensagens
+    mensagens_chat = [
+        m for m in state["messages"] 
+        if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
     ]
+
+    # 2. SEGREDO DO LANGGRAPH: Montamos o SystemMessage + TODO O HISTÓRICO REAL (incluindo ToolMessages)
+    mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + mensagens_chat
     
+    # 3. Invocamos a IA com a lista completa de mensagens do Estado
     resposta_ia = llm_with_tools.invoke(mensagens_para_ia)
     
     if hasattr(resposta_ia, 'tool_calls') and resposta_ia.tool_calls:
         print(f" -> 🚀 TOOL CALL DISPARADO AUTONOMAMENTE: {resposta_ia.tool_calls}")
     else:
-        print(" -> GPT-4o-mini solicitou dados faltantes ou respondeu dúvida via chat.")
+        print(" -> GPT-4o-mini processou o resultado da tool e gerou a resposta em texto.")
 
     return {"messages": [resposta_ia]}
+
 # ============================================================================
 # PASSO 6: NÓ DE CONVERSAS CASUAIS (Chitchat)
 # ============================================================================

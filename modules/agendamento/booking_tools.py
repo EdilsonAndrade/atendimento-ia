@@ -51,7 +51,30 @@ def init_booking_table():
         print(f"⚠️ Erro ao inicializar tabela de agendamentos no Postgres: {e}")
 
 
-
+def real_time_available(
+    tenant_id: str,
+    profissional: str,
+    data_agendamento: str,
+    horario: str,
+) -> str:
+    init_booking_table()
+    
+    check_query = """
+        SELECT id FROM agendamentos 
+        WHERE tenant_id = %s 
+        AND LOWER(profissional) = LOWER(%s) 
+        AND data_agendamento = %s 
+        AND horario = %s
+    """
+    
+    connection_kwargs = {"autocommit": True, "prepare_threshold": 0}
+    with psycopg.connect(DB_URI, **connection_kwargs) as conn:
+        with conn.cursor() as cur:
+            cur.execute(check_query, (tenant_id, profissional, data_agendamento, horario))
+            if cur.fetchone():
+                return f"Erro: O horário {horario} com o profissional {profissional} em {data_agendamento} já foi preenchido por outro cliente. Por favor, escolha outro horário."
+    return ""
+          
 def save_local_booking(
     tenant_id: str,
     cliente_nome: str,
@@ -66,7 +89,6 @@ def save_local_booking(
     """
     Insere o registro do agendamento no banco PostgreSQL.
     """
-    init_booking_table()
     
     insert_query = """
     INSERT INTO agendamentos (
@@ -79,6 +101,7 @@ def save_local_booking(
     with psycopg.connect(DB_URI, **connection_kwargs) as conn:
         with conn.cursor() as cur:
             cur.execute(
+                
                 insert_query,
                 (
                     tenant_id, cliente_nome, cliente_email, servico,
@@ -139,6 +162,11 @@ def confirmar_agendamento(
     print(f"\n --- [TOOL EXECUTADA: confirmar_agendamento] Processando reserva para {cliente_nome}... ---")
     
     try:
+        is_available = real_time_available(tenant_id, profissional, data_agendamento,horario)
+        
+        if is_available:
+            return is_available
+        
         # 1. Dispara integração com o Google Calendar (1.3)
         google_evt_id = create_google_calendar_event(
             email_profissional=email_profissional,
