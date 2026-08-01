@@ -220,31 +220,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
     contexto_encontrado = manager.search_context(pergunta_usuario, num_results=5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
-    now = datetime.now()
-    data_hoje_iso = now.strftime("%Y-%m-%d")
-    data_formatada_br = now.strftime("%d/%m/%Y")
-    hora_atual_str = now.strftime("%H:%M")
-
-    # Mapeamento dos dias da semana em português
-    dias_semana_pt = {
-        0: "segunda-feira",
-        1: "terça-feira",
-        2: "quarta-feira",
-        3: "quinta-feira",
-        4: "sexta-feira",
-        5: "sábado",
-        6: "domingo"
-    }
-
-    # Monta uma tabela dos próximos 7 dias calculados matematicamente pelo Python
-    tabela_dias = []
-    for i in range(7):
-        dia_calc = now + timedelta(days=i)
-        nome_dia = "hoje" if i == 0 else ("amanhã" if i == 1 else dias_semana_pt[dia_calc.weekday()])
-        data_iso = dia_calc.strftime("%Y-%m-%d")
-        data_br = dia_calc.strftime("%d/%m/%Y")
-        tabela_dias.append(f"• {nome_dia.capitalize()} ({dias_semana_pt[dia_calc.weekday()]}): {data_br} (ISO: '{data_iso}')")
-
+    tabela_dias, hora_atual_str, data_hoje_iso = get_tabela_dias(30)
     tabela_calendario_str = "\n".join(tabela_dias)
 
     system_prompt_str = (
@@ -395,6 +371,33 @@ def get_compiled_graph():
     # Compila e retorna o grafo com memória persistente
     return builder.compile(checkpointer=checkpointer)
 
+def get_tabela_dias(quantidade_dias: int):
+    now = datetime.now()
+    data_hoje_iso = now.strftime("%Y-%m-%d")
+    data_formatada_br = now.strftime("%d/%m/%Y")
+    hora_atual_str = now.strftime("%H:%M")
+
+    # Mapeamento dos dias da semana em português
+    dias_semana_pt = {
+        0: "segunda-feira",
+        1: "terça-feira",
+        2: "quarta-feira",
+        3: "quinta-feira",
+        4: "sexta-feira",
+        5: "sábado",
+        6: "domingo"
+    }
+
+    # Monta uma tabela dos próximos 7 dias calculados matematicamente pelo Python
+    tabela_dias = []
+    for i in range(quantidade_dias):
+        dia_calc = now + timedelta(days=i)
+        nome_dia = "hoje" if i == 0 else ("amanhã" if i == 1 else dias_semana_pt[dia_calc.weekday()])
+        data_iso = dia_calc.strftime("%Y-%m-%d")
+        data_br = dia_calc.strftime("%d/%m/%Y")
+        tabela_dias.append(f"• {nome_dia.capitalize()} ({dias_semana_pt[dia_calc.weekday()]}): {data_br} (ISO: '{data_iso}')")
+    
+    return tabela_dias, hora_atual_str, data_hoje_iso
 
 # ============================================================================
 # EXECUÇÃO DO AGENTE (Simulando uma chamada de API Multi-Tenant)
