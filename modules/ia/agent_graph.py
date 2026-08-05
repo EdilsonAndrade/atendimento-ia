@@ -12,12 +12,11 @@ from modules.vetorizacao.vector_manager import VectorManager
 from langgraph.checkpoint.postgres import PostgresSaver
 from modules.agendamento.booking_tools import confirmar_agendamento
 from modules.agendamento.agenda_tool import consultar_horarios_disponiveis
-from dotenv import load_dotenv
+from modules.agendamento.delete_agenda_tool import cancelar_agendamento
+from modules.agendamento.consulta_agenda_tool import consulta_agendamento
+from infrastructure.connection import DB_URI
 from datetime import datetime, timedelta
-
-load_dotenv()
-
-DB_URI = os.getenv("POSTGRES_DATABASE_URI","postgresql://postgres:2765581@localhost:5432/simplificandoai")
+from prompts.load_prompt import carregar_operacional_prompt
 llm_model = os.getenv("LLM", "llama3.3")
 print(f"Acessando o banco {DB_URI}")
 # ============================================================================
@@ -44,7 +43,7 @@ class AgentState(TypedDict):
 llm = ChatOpenAI(model=llm_model, temperature=0)
 
 # Vincula a Tool de agendamento ao modelo Llama 3.1
-tools = [consultar_horarios_disponiveis, confirmar_agendamento]
+tools = [consultar_horarios_disponiveis, confirmar_agendamento, cancelar_agendamento, consulta_agendamento]
 
 llm_with_tools = llm.bind_tools(tools)
 
@@ -220,40 +219,15 @@ def operational_node(state: AgentState, config: RunnableConfig):
     contexto_encontrado = manager.search_context(pergunta_usuario, num_results=5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
-    tabela_dias, hora_atual_str, data_hoje_iso = get_tabela_dias(30)
-    tabela_calendario_str = "\n".join(tabela_dias)
 
-    system_prompt_str = (
-        f"You are an intelligent booking assistant for the business (Tenant ID: '{tenant_id}').\n\n"
-        f"--- REAL-TIME CALENDAR REFERENCE (NEXT 7 DAYS COMPUTED BY SYSTEM) ---\n"
-        f"{tabela_calendario_str}\n"
-        f"Current Time Today: {hora_atual_str}\n\n"
-        f"CRITICAL DATE MAPPING RULE:\n"
-        f"- When the user specifies a day (e.g., 'hoje', 'amanhã', 'segunda-feira', 'terça-feira', etc.), "
-        f"LOOK UP the corresponding ISO date (YYYY-MM-DD) from the CALENDAR REFERENCE table above.\n"
-        f"- DO NOT perform date calculations yourself. STRICTLY use the exact ISO dates from the table.\n\n"
-        f"YOUR RESPONSIBILITIES:\n"
-        f"1. Help the user answer questions about services, prices, and barbers using KNOWLEDGE BASE CONTEXT.\n"
-        f"2. Check availability using 'consultar_horarios_disponiveis' tool.\n"
-        f"3. Complete bookings using 'confirmar_agendamento' tool.\n\n"
-        f"FALLBACK RULE FOR PROFESSIONAL PREFERENCE:\n"
-        f"- If the user says 'tanto faz', 'qualquer um', or does NOT specify a preferred professional:\n"
-        f"  CALL 'consultar_horarios_disponiveis' using 'Daniel' (or primary professional) for the requested date.\n\n"
-        f"TOOL EXECUTION RULES:\n"
-        f"- 'consultar_horarios_disponiveis': Needs tenant_id ('{tenant_id}'), profissional, and data_agendamento (YYYY-MM-DD).\n"
-        f"- MANDATORY DOUBLE-CHECK RULE BEFORE BOOKING:\n"
-        f"  Before executing 'confirmar_agendamento', you MUST ALWAYS execute 'consultar_horarios_disponiveis' "
-        f"  to verify if the requested time slot is STILL available in real-time. If another client booked it in the meantime, "
-        f"  DO NOT call 'confirmar_agendamento', inform the user politely in Portuguese, and suggest other available slots.\n"
-        f"- 'confirmar_agendamento': Call ONLY AFTER real-time availability is re-confirmed and all parameters are present: "
-        f"tenant_id, cliente_nome, cliente_email, servico, profissional, email_profissional, data_agendamento (YYYY-MM-DD), horario (HH:MM).\n\n"
-        f"MISSING INFORMATION RULE:\n"
-        f"- If time/date or user details are missing during booking, ask politely in Portuguese.\n"
-        f"- ONLY offer times AFTER current time {hora_atual_str} if booking for TODAY ({data_hoje_iso}).\n"
-        f"- Always respond in natural Portuguese (Brazil).\n\n"
-        f"--- KNOWLEDGE BASE CONTEXT ---\n"
-        f"{contexto_formatado}"
-    )
+    tabela_dias, hora_atual_str, data_hoje_iso = get_tabela_dias(7)
+    system_prompt_str = carregar_operacional_prompt(
+                            tenant_id=tenant_id,
+                            tabela_calendario_str=tabela_dias, 
+                            hora_atual_str=hora_atual_str, 
+                            data_hoje_iso=data_hoje_iso,
+                            contexto_formatado=contexto_formatado
+                        )
 
     # 1. Filtramos as decisões do roteador das mensagens
     mensagens_chat = [
