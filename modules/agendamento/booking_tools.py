@@ -2,12 +2,9 @@ from datetime import datetime
 from langchain.tools import tool
 from pydantic import Field, BaseModel, ConfigDict
 import psycopg
-import os
-from dotenv import load_dotenv
+from infrastructure.connection import DB_URI
 
-load_dotenv()
 
-DB_URI = os.getenv("POSTGRES_DATABASE_URI", "postgresql://postgres:2765581@localhost:5432/simplificando")
 print(f"Acessando o banco {DB_URI}")
 class BookingInput(BaseModel):
     # Permite aceitar tanto o nome do campo ('data_agendamento') quanto o alias ('data')
@@ -39,7 +36,8 @@ def init_booking_table():
         horario TIME NOT NULL,
         status VARCHAR(20) DEFAULT 'CONFIRMADO',
         google_event_id VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        deleted_at TIMESTAMP DEFAULT NULL
     );
     """
     connection_kwargs = {"autocommit": True, "prepare_threshold": 0}

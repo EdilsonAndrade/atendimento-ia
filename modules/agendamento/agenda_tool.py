@@ -1,15 +1,11 @@
 import os
 import psycopg
-from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ConfigDict
 from langchain.tools import tool
+from infrastructure.connection import DB_URI
 
 # Importa a função de inicialização do seu arquivo de booking
 from modules.agendamento.booking_tools import init_booking_table
-
-load_dotenv()
-
-DB_URI = os.getenv("POSTGRES_DATABASE_URI", "postgresql://postgres:2765581@localhost:5432/simplificando")
 
 
 class DisponibilidadeInput(BaseModel):
