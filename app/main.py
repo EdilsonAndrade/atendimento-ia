@@ -1,10 +1,14 @@
 # Ponto de Entrada que inicializa a aplicação FastAPI e registra os endpoints da versão 1 (v1) da API.
 # main.py
 import uvicorn
+import os
 from fastapi import FastAPI
 from app.core.config import settings
 from app.api.v1.router import api_router
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+# COMENTÁRIO: Carrega as variáveis declaradas no arquivo .env
+load_dotenv()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -33,6 +37,10 @@ app.add_middleware(
 # Acopla todas as rotas centralizadas do roteador v1
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
+
+# COMENTÁRIO: Lê as variáveis de ambiente com fallback para padrões seguros
+HOST = os.getenv("HOST", "0.0.0.0")
+PORT = int(os.getenv("PORT", 8000))
 if __name__ == "__main__":
     # Roda o servidor localmente na porta 8000 de forma otimizada
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True, app_dir=".")
+    uvicorn.run("app.main:app", host=HOST, port=PORT, reload=True, app_dir=".")
