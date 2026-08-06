@@ -18,12 +18,18 @@ app = FastAPI(
     redoc_url="/redoc"      # Rota alternativa corporativa
 )
 
-origins =  [
+# COMENTÁRIO: Lista de origens permitidas pelo CORS contendo portas locais de desenvolvimento e subdomínios de produção
+origins = [
     "http://localhost:3000",
     "http://localhost:3001",
+    "http://localhost:8000",
+    "http://localhost:8001",  # Adicionado para suportar testes locais em porta alternativa
+    "http://127.0.0.1:8001",  # Adicionado para evitar bloqueio ao chamar via IP local em testes
     "https://interasisai.com.br",
     "https://www.interasisai.com.br",
     "http://interasisai.com.br",
+    "https://api.interasisai.com.br",  # Adicionado subdomínio da API em produção
+    "http://api.interasisai.com.br"
 ]
 
 app.add_middleware(
