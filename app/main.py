@@ -4,6 +4,7 @@ import uvicorn
 from fastapi import FastAPI
 from app.core.config import settings
 from app.api.v1.router import api_router
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -13,6 +14,22 @@ app = FastAPI(
     redoc_url="/redoc"      # Rota alternativa corporativa
 )
 
+origins =  [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "https://interasisai.com.br",
+    "https://www.interasisai.com.br",
+    "http://interasisai.com.br",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],  # Permite todos os métodos (GET, POST, OPTIONS, DELETE, etc.)
+    allow_headers=["*"],  # Permite todos os headers (incluindo X-Tenant-ID, Content-Type, etc.)
+    
+)
 # Acopla todas as rotas centralizadas do roteador v1
 app.include_router(api_router, prefix=settings.API_V1_STR)
 

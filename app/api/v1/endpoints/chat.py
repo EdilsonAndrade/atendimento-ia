@@ -1,10 +1,13 @@
 # app/api/v1/endpoints/chat.py
+import logging
+import asyncio
 from fastapi import APIRouter, Depends, status, HTTPException
 from langchain_core.messages import HumanMessage
 from app.api.deps import get_tenant_id
 from app.schemas.chat import MessageRequest, ChatResponse
 from modules.ia.agent_graph import get_compiled_graph
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Instanciamos o grafo compilado com o PostgresSaver UMA ÚNICA VEZ (Singleton)
@@ -43,7 +46,12 @@ async def chat_interaction(request: MessageRequest, tenant_id: str = Depends(get
     try:
         # Puxamos o grafo compilado com o PostgresSaver
         # O LangGraph busca o histórico no Postgres automaticamente antes de rodar
-        result = graph_app.invoke(estado_inicial, configuracao_requisicao)
+        async with asyncio.timeout(40.0):
+            result = await asyncio.to_thread(
+            graph_app.invoke, 
+            estado_inicial, 
+            configuracao_requisicao
+        )
         resposta_final = result["messages"][-1].content
         
         return ChatResponse(
@@ -51,9 +59,23 @@ async def chat_interaction(request: MessageRequest, tenant_id: str = Depends(get
             status="success",
             response=resposta_final
         )
-    except Exception as e:
-        print(f"❌ [API ERRO] Falha ao executar o agente com PostgresSaver: {str(e)}")
+    except TimeoutError:
+        logger.error(
+            f"❌ [TIMEOUT] O processamento da mensagem estourou o tempo limite para a thread {request.thread_id}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="O serviço de atendimento demorou muito para responder. Por favor, tente novamente.",
+        )
+    except Exception as ex:
+        # Log detalhado do erro no servidor para monitoramento interno
+        logger.error(
+            f"❌ [AGENT ERROR] Falha inesperada no processamento da thread {request.thread_id}: {str(ex)}",
+            exc_info=True,
+        )
+
+        # Retorno amigável em JSON sem expor stack traces sensíveis de banco/código para o cliente
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Erro interno no motor de IA: {str(e)}"
+            detail="Ocorreu um erro interno ao processar sua solicitação no Atendimento de IA. Nossa equipe já foi notificada.",
         )

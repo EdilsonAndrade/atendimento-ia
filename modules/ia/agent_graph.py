@@ -3,7 +3,7 @@ import psycopg
 import os
 from typing import TypedDict, Annotated, Sequence
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig  # IMPORTANTE: Para receber as configs dinâmicas do FastAPI
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -18,6 +18,7 @@ from infrastructure.connection import DB_URI
 from datetime import datetime, timedelta
 from prompts.load_prompt import carregar_operacional_prompt
 llm_model = os.getenv("LLM", "llama3.3")
+api_key = os.getenv("API_KEY")
 print(f"Acessando o banco {DB_URI}")
 # ============================================================================
 # PASSO 1: ESTRUTURA DO ESTADO (O "Quadro Negro" Compartilhado)
@@ -40,7 +41,12 @@ class AgentState(TypedDict):
 # ============================================================================
 
 # Inicializamos o modelo local Llama 3 (temperature=0 para decisões lógicas)
-llm = ChatOpenAI(model=llm_model, temperature=0)
+llm = ChatOpenAI(
+    model=llm_model, 
+    api_key=api_key,
+    base_url="https://api.deepseek.com/v1", # Garanta que a base URL aponta para a API do DeepSeek
+    temperature=0
+    )
 
 # Vincula a Tool de agendamento ao modelo Llama 3.1
 tools = [consultar_horarios_disponiveis, confirmar_agendamento, cancelar_agendamento, consulta_agendamento]
@@ -85,7 +91,14 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'."
     ))
     
-    # Monta o array com as mensagens reais no formato nativo da OpenAI
+    # COMENTÁRIO: Filtra apenas mensagens de usuário e assistente (descartando ToolMessages e decisões de roteamento anteriores)
+    # Isso impede que cortes no histórico deixem mensagens de ferramentas órfãs enviadas para a API.
+    historico_limpo = [
+        m for m in state["messages"] 
+        if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
+        and not isinstance(m, ToolMessage)
+    ]
+   # Monta o array limpo sem o risco de enviar ToolMessages sem seu pai AIMessage
     mensagens_para_ia = [system_prompt] + historico_limpo[-6:]
     
     resposta = llm.invoke(mensagens_para_ia)
@@ -291,8 +304,11 @@ builder.add_node("institutional_node", institutional_node)
 builder.add_node("operational_node", operational_node)
 builder.add_node("chitchat_node", chitchat_node)
 
+# COMENTÁRIO: O parâmetro handle_tool_errors instrui o LangGraph a capturar
+# exceções de execução das tools e converter em resposta de erro para a IA,
+# evitando que a execução do grafo quebre com exceção Python unhandled.
 # Registra o nó executor de Tools do LangGraph
-tool_node = ToolNode(tools=tools)
+tool_node = ToolNode(tools=tools, handle_tool_errors=True)
 builder.add_node("tools", tool_node)
 
 # 3. Definimos o Ponto de Entrada do sistema
