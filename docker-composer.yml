@@ -20,7 +20,7 @@ services:
     container_name: chatatendimento-api
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
-      - "8001:8001"
+      - "8001:8000"
     environment:
       # COMENTÁRIO: Força o host da conexão Postgres para a rede interna do Docker do host da VPS
       - DATABASE_URL=postgresql://postgres:fNH687KsK2ggJ_EZT3ZUh0q80mqUuu0RuOdBnLOjmU8@host.docker.internal:5432/interasisai

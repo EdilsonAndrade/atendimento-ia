@@ -2,11 +2,14 @@
 # main.py
 import uvicorn
 import os
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from app.core.config import settings
 from app.api.v1.router import api_router
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from app.core.security import get_swagger_credentials
+
 # COMENTÁRIO: Carrega as variáveis declaradas no arquivo .env
 load_dotenv()
 
@@ -14,10 +17,26 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.PROJECT_VERSION,
     description=settings.PROJECT_DESCRIPTION,
-    docs_url="/docs",       # Rota explícita do Swagger
-    redoc_url="/redoc"      # Rota alternativa corporativa
+    docs_url=None,
+    redoc_url=None,
+    openapi_url="/openapi.json"  # COMENTÁRIO: O esquema do OpenAPI continua em /openapi.json
 )
 
+# COMENTÁRIO: Rota protegida do Swagger UI
+@app.get("/docs", include_in_schema=False)
+async def get_swagger_documentation(username: str = Depends(get_swagger_credentials)):
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title=app.title + " - Swagger UI"
+    )
+
+# COMENTÁRIO: Rota protegida do Redoc
+@app.get("/redoc", include_in_schema=False)
+async def get_redoc_documentation(username: str = Depends(get_swagger_credentials)):
+    return get_redoc_html(
+        openapi_url="/openapi.json",
+        title=app.title + " - ReDoc"
+    )
 # COMENTÁRIO: Lista de origens permitidas pelo CORS contendo portas locais de desenvolvimento e subdomínios de produção
 origins = [
     "http://localhost:3000",
