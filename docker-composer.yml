@@ -1,4 +1,4 @@
-ervices:
+services:
   interasisai-web:
     container_name: interasisai-web
     build:
@@ -14,22 +14,23 @@ ervices:
       - proxy_default
 
   chatatendimento-api:
-    container_name: chatatendimento-api
-    # COMENTÁRIO: Garante que o container execute o start.sh na inicialização
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
     build:
-      context: ./atendimento-ia # Aponta para a subpasta do Python
+      context: .
       dockerfile: Dockerfile
-    restart: always
+    container_name: chatatendimento-api
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8001:8001"
     environment:
-      - PORT=8001
-      - PYTHONUNBUFFERED=1
+      # COMENTÁRIO: Força o host da conexão Postgres para a rede interna do Docker do host da VPS
+      - DATABASE_URL=postgresql://postgres:fNH687KsK2ggJ_EZT3ZUh0q80mqUuu0RuOdBnLOjmU8@host.docker.internal:5432/interasisai
+      - POSTGRES_HOST=host.docker.internal
+    extra_hosts:
+      # COMENTÁRIO: Permite que o container acesse serviços rodando no Host via 'host.docker.internal'
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ./atendimento-ia/.env
     networks:
       - proxy_default
 
 networks:
-  proxy_default:
-    name: simplificandoai_default # Garanta que bate com o nome exato da rede do Nginx Proxy Manager
-    external: true
