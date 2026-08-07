@@ -1,0 +1,35 @@
+ervices:
+  interasisai-web:
+    container_name: interasisai-web
+    build:
+      context: ./interasisai-web # Aponta para a subpasta do Next.js
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+    networks:
+      - proxy_default
+
+  chatatendimento-api:
+    container_name: chatatendimento-api
+    # COMENTÁRIO: Garante que o container execute o start.sh na inicialização
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    build:
+      context: ./atendimento-ia # Aponta para a subpasta do Python
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+      - PYTHONUNBUFFERED=1
+    networks:
+      - proxy_default
+
+networks:
+  proxy_default:
+    name: simplificandoai_default # Garanta que bate com o nome exato da rede do Nginx Proxy Manager
+    external: true

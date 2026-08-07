@@ -8,6 +8,9 @@ ENV PYTHONUNBUFFERED=1
 # Define o diretório de trabalho dentro do container
 WORKDIR /app
 
+# COMENTÁRIO: Adiciona o diretório /app ao PYTHONPATH para o Python localizar o módulo 'app.main' sem erros de importação
+ENV PYTHONPATH=/app
+
 # Instala dependências do sistema caso necessário
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /lib/apt/lists/*
 
@@ -23,5 +26,8 @@ COPY . .
 # Expõe a porta interna 8001
 EXPOSE 8001
 
+# COMENTÁRIO: Torna o script de inicialização executável
+RUN sed -i -e 's/\r$//' /app/start.sh && chmod +x /app/start.sh
+
 # Comando para iniciar a API (ajuste main:app conforme o seu arquivo principal Python)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["/app/start.sh"]
