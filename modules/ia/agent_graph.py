@@ -8,7 +8,6 @@ from langchain_core.runnables import RunnableConfig  # IMPORTANTE: Para receber 
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.graph import StateGraph, END
-from modules.vetorizacao.vector_manager import VectorManager
 from langgraph.checkpoint.postgres import PostgresSaver
 from modules.agendamento.booking_tools import confirmar_agendamento
 from modules.agendamento.agenda_tool import consultar_horarios_disponiveis
@@ -17,6 +16,11 @@ from modules.agendamento.consulta_agenda_tool import consulta_agendamento
 from infrastructure.connection import DB_URI
 from datetime import datetime, timedelta
 from prompts.load_prompt import carregar_operacional_prompt
+# ============================================================================
+# ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
+# ============================================================================
+# REMOVIDO: from modules.vetorizacao.vector_manager import VectorManager
+from modules.vetorizacao.gerenciador_vetores import GerenciadorVetores  # COMENTÁRIO: Utiliza a classe do PGVector
 llm_model = os.getenv("LLM", "llama3.3")
 api_key = os.getenv("API_KEY")
 print(f"Acessando o banco {DB_URI}")
@@ -154,10 +158,14 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
     
-    db_path = f"db/{tenant_id}/knowledge_db"
-    print(f" -> [MULTITENANT] Conectando ao banco de dados do Tenant: '{tenant_id}' em '{db_path}'")
     try:
-        manager = VectorManager(db_directory=db_path)
+        # ============================================================================
+        # ALTERAÇÃO NA CONSULTA VETORIAL: Substitui pasta local por busca no PostgreSQL
+        # ============================================================================
+        # REMOVIDO: manager = VectorManager(db_directory=f"db/{tenant_id}/knowledge_db")
+        
+        # COMENTÁRIO: Instancia o gerenciador de vetores do PostgreSQL
+        manager = GerenciadorVetores()
     except Exception as e:
         print(f"Erro ao carregar banco: {e}")
         return {"messages": [AIMessage(content="Não foram encontrados dados do cliente para formular a resposta.")]}
@@ -169,10 +177,10 @@ def institutional_node(state: AgentState, config: RunnableConfig):
             pergunta_usuario = msg.content
             break
 
-    print(f" -> Buscando no ChromaDB por: '{pergunta_usuario}'")
+    print(f" -> Buscando no DB por: '{pergunta_usuario}'")
     
     # 2. Busca RAG via MMR
-    contexto_encontrado = manager.search_context(pergunta_usuario, num_results=5)
+    contexto_encontrado = manager.search_context(pergunta_usuario,tenant_id, 5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
     # 3. Formata o histórico recente de conversas para o LLM lembrar do passado
@@ -214,10 +222,14 @@ def operational_node(state: AgentState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
     
-    db_path = f"db/{tenant_id}/knowledge_db"
-    
     try:
-        manager = VectorManager(db_directory=db_path)
+        # ============================================================================
+        # ALTERAÇÃO NA CONSULTA VETORIAL: Substitui pasta local por busca no PostgreSQL
+        # ============================================================================
+        # REMOVIDO: manager = VectorManager(db_directory=f"db/{tenant_id}/knowledge_db")
+        
+        # COMENTÁRIO: Instancia o gerenciador de vetores do PostgreSQL
+        manager = GerenciadorVetores()
     except Exception as e:
         print(f"Erro ao carregar banco: {e}")
         return {"messages": [AIMessage(content="Não foram encontrados dados do cliente.")]}
@@ -229,7 +241,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
             pergunta_usuario = msg.content
             break
 
-    contexto_encontrado = manager.search_context(pergunta_usuario, num_results=5)
+    contexto_encontrado = manager.search_context(pergunta_usuario, tenant_id, 5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
 
