@@ -1,44 +1,67 @@
 import os
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_postgres import PGVector
+from langchain_core.documents import Document
+from infrastructure.connection import DB_URI
+
 
 class GerenciadorVetores:
-    def __init__(self, pasta_db: str = "dados_vetoriais"):
+    def __init__(self, collection_name: str = "interasis_knowledge"):
         """
-        Inicializa o gerenciador de banco vetorial.
-        :param pasta_db: Nome da pasta onde o ChromaDB vai salvar os dados no seu notebook.
+        COMENTÁRIO: Inicializa o gerenciador conectando ao PostgreSQL (pgvector).
+        Mantém o modelo local do HuggingFace para gerar os embeddings.
         """
-        self.pasta_db = pasta_db
-        print("Inicializando modelo de Embeddings local...")
-        self.embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
-        self.banco = None
+        raw_db_url = os.getenv("DATABASE_URL", DB_URI)
         
-        # Se a pasta já existir, nós carregamos o banco existente automaticamente
-        if os.path.exists(self.pasta_db):
-            print(f"Carregando banco vetorial existente da pasta: {self.pasta_db}")
-            self.banco = Chroma(persist_directory=self.pasta_db, embedding_function=self.embeddings)
-
-    def criar_banco_com_textos(self, textos: list):
-        """
-        Pega uma lista de textos, converte em vetores e salva no disco.
-        """
-        print(f"Vetorizando e salvando {len(textos)} pedaços de texto em '{self.pasta_db}'...")
-        self.banco = Chroma.from_texts(
-            texts=textos,
-            embedding=self.embeddings,
-            persist_directory=self.pasta_db
+        # COMENTÁRIO: Substitui a declaração do protocolo tradicional pelo driver psycopg3 se necessário
+        if raw_db_url.startswith("postgresql://"):
+            self.db_url = raw_db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        else:
+            self.db_url = raw_db_url
+            
+        self.collection_name = collection_name
+        print("Inicializando modelo de Embeddings local HuggingFace...")
+        self.embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
+        # COMENTÁRIO: Conecta ao PostgreSQL através do PGVector
+        self.banco = PGVector(
+            embeddings=self.embeddings,
+            collection_name=self.collection_name,
+            connection=self.db_url,
+            use_jsonb=True,
         )
-        print("Banco vetorial criado com sucesso no disco!")
 
-    def buscar_contexto(self, pergunta: str, quantidade_resultados: int = 1):
+    def criar_banco_com_textos(self, textos: list, tenant_id: str):
         """
-        Busca no banco os pedaços de texto mais parecidos com a pergunta.
+        COMENTÁRIO: Converte os textos em vetores via HuggingFace e salva no PostgreSQL,
+        injetando o tenant_id nos metadados para garantir o isolamento entre clientes.
+        """
+        print(f"Vetorizando e salvando {len(textos)} pedaços de texto para o tenant '{tenant_id}' no PostgreSQL...")
+        
+        # COMENTÁRIO: Transforma a lista de strings em objetos Document com o tenant_id no metadata
+        documentos = [
+            Document(page_content=texto, metadata={"tenant_id": tenant_id})
+            for texto in textos
+        ]
+        
+        # COMENTÁRIO: Insere os documentos diretamente no banco de dados vetorial
+        self.banco.add_documents(documentos)
+        print("Vetores salvos com sucesso no PostgreSQL!")
+
+    def search_context(self, pergunta: str, tenant_id: str, quantidade_resultados: int = 1):
+        """
+        COMENTÁRIO: Busca os textos mais semelhantes à pergunta, filtrando obrigatoriamente pelo tenant_id.
         """
         if not self.banco:
-            raise ValueError("O banco vetorial não foi inicializado ou está vazio.")
+            raise ValueError("O banco vetorial não foi inicializado.")
         
-        print(f"Buscando no banco por: '{pergunta}'")
-        resultados = self.banco.similarity_search(pergunta, k=quantidade_resultados)
+        print(f"Buscando no banco por: '{pergunta}' (Tenant: {tenant_id})")
+        
+        # COMENTÁRIO: O parâmetro filter garante a busca isolada apenas nos registros daquele cliente
+        resultados = self.banco.similarity_search(
+            query=pergunta,
+            k=quantidade_resultados,
+            filter={"tenant_id": tenant_id}
+        )
         
         # Retorna apenas o texto puro de cada resultado encontrado
         return [doc.page_content for doc in resultados]

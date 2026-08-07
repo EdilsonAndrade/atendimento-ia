@@ -2,7 +2,7 @@
 import os
 import pandas as pd
 from pypdf import PdfReader
-from modules.vetorizacao.vector_manager import VectorManager
+from modules.vetorizacao.gerenciador_vetores import GerenciadorVetores 
 
 def initialize_tenant_data(tenant_id: str, pdf_path: str = None, excel_path: str = None, txt_path: str = None):
     """
@@ -92,16 +92,18 @@ def initialize_tenant_data(tenant_id: str, pdf_path: str = None, excel_path: str
         print("⚠ Excell ignorado, não fornecido")
 
     if row_chunks_db:
-        # Instancia o gerenciador operacional na pasta isolada do cliente
-        oper_manager = VectorManager(db_directory=db_path)
-        # Salva as linhas indexadas no banco vetorial operacional dele
-        oper_manager.save_documents(row_chunks_db)
-        print(f" -> Sucesso! {len(row_chunks_db)} linhas da planilha foram vetorizadas.")
+        # COMENTÁRIO: Instancia o gerenciador de vetores conectado ao PostgreSQL (pgvector)
+        gerenciador = GerenciadorVetores()
+        
+        # COMENTÁRIO: Salva todos os chunks extraídos passando o tenant_id para garantir o isolamento no banco
+        gerenciador.criar_banco_com_textos(textos=row_chunks_db, tenant_id=tenant_id)
+        
+        print(f" -> Sucesso! {len(row_chunks_db)} chunks foram vetorizados e salvos no PostgreSQL para o tenant [{tenant_id}].")
         print("\n" + "=" * 60)
         print(f" INGESTÃO DO TENANT [{tenant_id}] CONCLUÍDA COM SUCESSO!")
         print("=" * 60)
     else:
-        print(f" NÃO REALIZADA INGESTÃO DO TENANT - FALTA DE INFORMAÇÃO")    
+        print(f" NÃO REALIZADA INGESTÃO DO TENANT - FALTA DE INFORMAÇÃO")
 
 
 
