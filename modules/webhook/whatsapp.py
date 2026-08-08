@@ -29,28 +29,28 @@ except Exception as e:
 
 async def manter_digitando_continuo(instance_name: str, sender_phone: str, stop_event: asyncio.Event):
     """
-    Envia o evento de 'composing' a cada 2.5 segundos até que a flag stop_event seja ativada.
+    Envia o evento de 'composing' a cada 3.0 segundos até que a flag stop_event seja ativada.
     """
     url = f"{EVOLUTION_API_URL}/chat/sendPresence/{instance_name}"
     payload = {
         "number": sender_phone,
         "presence": "composing",
-        "delay": 500
+        "delay": 3500
     }
     
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    # COMENTÁRIO: Aumenta o timeout do HTTP Client para 3.5s e ignora oscilações na resposta do digitando
+    async with httpx.AsyncClient(timeout=60.0) as client:
         while not stop_event.is_set():
             try:
                 await client.post(url, json=payload, headers=headers_global)
-            except Exception as e:
-                logger.warning(f"[WhatsApp Warning] Erro no loop de digitando: {str(e)}")
+            except Exception:
+                # Silencia erros de conectividade no status 'digitando' para não poluir o console
+                pass
             
-            # COMENTÁRIO: Aguarda 2.5 segundos antes de renovar a presença (ou encerra se stop_event for True)
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=2.5)
+                await asyncio.wait_for(stop_event.wait(), timeout=3.0)
             except asyncio.TimeoutError:
                 pass
-
 async def buscar_instancia_por_nome(instance_name: str) -> dict | None:
     """
     Busca o tenant_id e dados da instância com base no instance_name recebido do Webhook.
@@ -79,15 +79,18 @@ async def salvar_instancia_banco(tenant_id: str, instance_name: str) -> dict:
     Insere ou atualiza o registro da instância vinculando-a ao tenant no banco.
     """
     query = """
-        INSERT INTO whatsapp_instances (tenant_id, instance_name, status)
-        VALUES ($1, $2, 'connecting')
+        INSERT INTO whatsapp_instances (tenant_id, instance_name)
+        VALUES (%s, %s)
         ON CONFLICT (instance_name) 
         DO UPDATE SET tenant_id = EXCLUDED.tenant_id, updated_at = CURRENT_TIMESTAMP
-        RETURNING id, tenant_id, instance_name, status;
+        RETURNING id, tenant_id, instance_name
     """
-    async with get_db_connection() as conn:
-        result = await conn.fetchrow(query, tenant_id, instance_name)
-        return dict(result)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, (tenant_id, instance_name))
+            result = cur.fetchone()
+            columns = [desc[0] for desc in cur.description]
+            return dict(zip(columns, result))
     
 
             
@@ -100,15 +103,16 @@ async def processar_mensagem_e_responder(
     instance_name: str
 ):
     """
-    Executa o pipeline do LangGraph mantendo o status 'digitando...' continuamente visível no WhatsApp.
+    Executa o pipeline do LangGraph e cancela a animação de digitando imediatamente após a resposta.
     """
-    # COMENTÁRIO 1: Evento de controle para sinalizar a parada do 'digitando...'
     stop_typing_event = asyncio.Event()
     
-    # COMENTÁRIO 2: Inicia o loop de animação contínua como uma task paralela em background
+    # Inicia o loop do digitando em background
     typing_task = asyncio.create_task(
         manter_digitando_continuo(instance_name, sender_phone, stop_typing_event)
     )
+
+    resposta_final = ""
 
     try:
         logger.info(f"[WhatsApp] Processando mensagem do tenant {tenant_id} para {sender_phone}")
@@ -129,39 +133,47 @@ async def processar_mensagem_e_responder(
             }
         }
         
-        resposta_final = ""
-        try:
-            # COMENTÁRIO 3: Enquanto o LangGraph processa (carrega embeddings, faz RAG e chama a LLM)...
-            async with asyncio.timeout(40.0):
-                result = await asyncio.to_thread(
-                    graph_app.invoke, 
-                    estado_inicial, 
-                    configuracao_requisicao
-                )
+        # COMENTÁRIO 1: Aumentado timeout para 60s para dar tempo da LLM + DB sem dar timeout
+        async with asyncio.timeout(60.0):
+            result = await asyncio.to_thread(
+                graph_app.invoke, 
+                estado_inicial, 
+                configuracao_requisicao
+            )
+        
+        # Se o Grafo executou com sucesso, extrai o texto da resposta
+        if result and "messages" in result and result["messages"]:
             resposta_final = result["messages"][-1].content
-            
-        except Exception as ex:
-            logger.error(f"[WhatsApp-WebHook] Erro no grafo do tenant {tenant_id} para {sender_phone}: {str(ex)}")
+
+    except Exception as ex:
+        logger.error(f"[WhatsApp-WebHook] Erro no grafo do tenant {tenant_id} para {sender_phone}: {str(ex)}")
+        # COMENTÁRIO 2: Define a mensagem de erro APENAS se o Grafo não tiver retornado nada antes
+        if not resposta_final:
             resposta_final = "Desculpe, tive um problema ao processar sua solicitação. Pode tentar novamente em instantes?"
 
-        # COMENTÁRIO 4: Envio da resposta de texto para o cliente
+    finally:
+        # COMENTÁRIO 3: Cancela a task do digitando IMEDIATAMENTE sem esperar o loop HTTP terminar
+        stop_typing_event.set()
+        typing_task.cancel()
+        try:
+            await typing_task
+        except asyncio.CancelledError:
+            pass
+
+    # COMENTÁRIO 4: Dispara uma ÚNICA mensagem para o WhatsApp
+    if resposta_final:
         endpoint_send = f"{EVOLUTION_API_URL}/message/sendText/{instance_name}"
         payload_envio = {
             "number": sender_phone,
             "text": resposta_final
         }
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(endpoint_send, json=payload_envio, headers=headers_global)
-            if response.status_code in [200, 201]:
-                logger.info(f"[WhatsApp] Resposta enviada com sucesso para {sender_phone}")
-            else:
-                logger.error(f"[WhatsApp Error] Falha ao enviar para Evolution API ({response.status_code}): {response.text}")
-
-    except Exception as e:
-        logger.error(f"[WhatsApp Error] Falha geral no processamento para {sender_phone}: {str(e)}")
-
-    finally:
-        # COMENTÁRIO 5: Garante SEMPRE o encerramento do loop de digitando no final do processo
-        stop_typing_event.set()
-        await typing_task
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(endpoint_send, json=payload_envio, headers=headers_global)
+                if response.status_code in [200, 201]:
+                    logger.info(f"[WhatsApp] Resposta enviada com sucesso para {sender_phone}")
+                else:
+                    logger.error(f"[WhatsApp Error] Falha Evolution API ({response.status_code}): {response.text}")
+        except Exception as err_send:
+            logger.error(f"[WhatsApp Error] Falha ao enviar resposta para o WhatsApp: {str(err_send)}")

@@ -3,6 +3,7 @@
 import uvicorn
 import os
 from fastapi import Depends, FastAPI
+from app.api.v1.webhooks import whatsapp
 from app.core.config import settings
 from app.api.v1.router import api_router
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
@@ -10,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from app.core.security import get_swagger_credentials
 from app.api.v1.webhooks.whatsapp import router as whatsapp_router
+from app.api.v1.endpoints.evolution_whatsapp_instances import router as evolution_instances_router
 # COMENTÁRIO: Carrega as variáveis declaradas no arquivo .env
 load_dotenv()
 
@@ -64,6 +66,11 @@ app.include_router(
     whatsapp_router,
     prefix="/api/v1",
     tags=["Webhooks WhatsApp"]
+)
+app.include_router(
+    evolution_instances_router,
+    prefix="/api/v1",
+    tags=["Evolution WhatsApp Instances"]
 )
 # Acopla todas as rotas centralizadas do roteador v1
 app.include_router(api_router, prefix=settings.API_V1_STR)

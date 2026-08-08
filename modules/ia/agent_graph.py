@@ -278,29 +278,45 @@ def operational_node(state: AgentState, config: RunnableConfig):
 # ============================================================================
 def chitchat_node(state: AgentState, config: RunnableConfig):
     """
-    Nó de conversa casual simples e direta.
+    Nó de conversa casual/chitchat protegido com SystemMessage e Guardrails.
     """
     print("\n --- [NÓ: chitchat_node] Processando conversa casual... ---")
     
-    # Filtra histórico limpando decisões do roteador
-    historico = [
-        m for m in state["messages"] 
-        if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
-    ]
+    # 1. Carrega o guardrail de recusa
+    caminho_guardrail = os.path.join(os.path.dirname(__file__), "..", "..", "prompts", "guardrails.md")
+    guardrails_text = ""
+    if os.path.exists(caminho_guardrail):
+        with open(caminho_guardrail, "r", encoding="utf-8") as f:
+            guardrails_text = f.read()
+
+    # 2. Filtra APENAS mensagens de texto do usuário e assistente (descarta ToolMessages e decisões do roteador)
+    historico_limpo = []
+    for msg in state["messages"]:
+        if isinstance(msg, HumanMessage):
+            historico_limpo.append(msg)
+        elif isinstance(msg, AIMessage) and not str(msg.content).startswith("Routing decision:"):
+            historico_limpo.append(msg)
+
+    # 3. MONTA O PROMPT CORRETO COMO SystemMessage (E NÃO AIMessage)
+    system_prompt = SystemMessage(content=(
+        f"{guardrails_text}\n\n"
+        "You are a polite AI assistant for the business.\n"
+        "Respond courteously to simple greetings ('olá', 'bom dia') or farewells.\n"
+        "CRITICAL: If the user asks for jokes, off-topic entertainment, or uses inappropriate language, REJECT politely using the guardrail rule.\n"
+        "ALWAYS respond in the exact same language as the user."
+    ))
     
-    prompt_casual = (
-        "You are a friendly AI assistant for a business SaaS.\n"
-        "Respond politely and naturally to the user's message.\n"
-        "CRITICAL: Detect the language of the user's message and respond in that same language.\n"
-        "Gently remind them that you can help with booking appointments or answering questions about services.\n"
-        "Do NOT invent any prices or business hours."
-    )
+    # Envia o SystemMessage no topo + as últimas 4 mensagens limpas do chat
+    mensagens_para_ia = [system_prompt] + historico_limpo[-4:]
     
-    mensagens_para_ia = [AIMessage(content=prompt_casual)] + historico
-    resposta_ia = llm.invoke(mensagens_para_ia)
-    
-    print(" -> Resposta casual gerada com sucesso!")
-    return {"messages": [AIMessage(content=resposta_ia.content)]}
+    try:
+        resposta_ia = llm.invoke(mensagens_para_ia)
+        print(" -> Resposta casual/guardrail gerada com sucesso!")
+        return {"messages": [AIMessage(content=resposta_ia.content)]}
+    except Exception as e:
+        print(f" ⚠️ ERRO NO CHITCHAT_NODE: {str(e)}")
+        # Fallback seguro caso a API da LLM oscile no chitchat
+        return {"messages": [AIMessage(content="Meu foco é exclusivo no atendimento e agendamento de serviços da empresa. Como posso te ajudar com nossos horários ou serviços hoje?")]}
 
 
 # ============================================================================

@@ -2,6 +2,11 @@
 
 You are an intelligent booking assistant for the business (Tenant ID: '{tenant_id}').
 
+---
+
+{guardrails}
+
+---
 
 ## CALENDAR REFERENCE (NEXT 7 DAYS)
 {tabela_calendario_str}
