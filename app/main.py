@@ -9,7 +9,7 @@ from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from app.core.security import get_swagger_credentials
-
+from app.api.v1.webhooks.whatsapp import router as whatsapp_router
 # COMENTÁRIO: Carrega as variáveis declaradas no arquivo .env
 load_dotenv()
 
@@ -51,6 +51,7 @@ origins = [
     "http://api.interasisai.com.br"
 ]
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -58,6 +59,11 @@ app.add_middleware(
     allow_methods=["*"],  # Permite todos os métodos (GET, POST, OPTIONS, DELETE, etc.)
     allow_headers=["*"],  # Permite todos os headers (incluindo X-Tenant-ID, Content-Type, etc.)
     
+)
+app.include_router(
+    whatsapp_router,
+    prefix="/api/v1",
+    tags=["Webhooks WhatsApp"]
 )
 # Acopla todas as rotas centralizadas do roteador v1
 app.include_router(api_router, prefix=settings.API_V1_STR)

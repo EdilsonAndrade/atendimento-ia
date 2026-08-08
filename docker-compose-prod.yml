@@ -1,0 +1,89 @@
+services:
+  interasisai-web:
+    container_name: interasisai-web
+    build:
+      context: ./interasisai-web # Aponta para a subpasta do Next.js
+      dockerfile: Dockerfile
+      args:
+        # COMENTÁRIO: O Compose lê os valores injetados pelo comando no terminal
+        - NEXT_PUBLIC_PYTHON_BACKEND_URL
+        - NEXT_PUBLIC_TENANT_ID
+    restart: always
+    ports:
+      - "3001:3001"
+    env_file:
+      - ./interasisai-web/.env
+    networks:
+      - proxy_default
+  
+  evolution_redis:
+    image: redis:7-alpine
+    container_name: evolution_redis
+    restart: always
+    volumes:
+      - redis_evolution_data:/data
+    env_file:
+      - ./atendimento-ia/.env
+    networks:
+      - proxy_default
+
+  evolution-api:
+    image: evoapicloud/evolution-api:latest
+    container_name: evolution-api
+    restart: always
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./atendimento-ia/.env
+    environment:
+      - SERVER_URL=https://evolution.interasisai.com.br
+      - AUTHENTICATION_TYPE=apikey
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      
+      - DATABASE_ENABLED=true
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://postgres:${POSTGRES_PASSWORD}@simplificandoai-db:5432/evolution?schema=public
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://evolution_redis:6379/1
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_LOCAL_ENABLED=false
+      
+      - WEBSOCKET_ENABLED=true
+      - WEBSOCKET_GLOBAL_EVENTS=true
+      
+
+      - WEBHOOK_GLOBAL_URL=http://chatatendimento-api:8000/api/v1/webhook/whatsapp/evolution
+      - WEBHOOK_GLOBAL_ENABLED=true
+      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
+      - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
+    depends_on:
+      - evolution_redis
+    networks:
+      - proxy_default
+
+  chatatendimento-api:
+    build:
+      context: ./atendimento-ia
+      dockerfile: Dockerfile
+    container_name: chatatendimento-api
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8001:8000"
+    extra_hosts:
+      # COMENTÁRIO: Permite que o container acesse serviços rodando no Host via 'host.docker.internal'
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - ./atendimento-ia/.env
+    networks:
+      - proxy_default
+
+networks:
+  proxy_default:
+    name: simplificandoai_default # Garanta que bate com o nome exato da rede do Nginx Proxy Manager
+    external: true
+
+volumes:
+  redis_evolution_data:
