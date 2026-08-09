@@ -15,30 +15,52 @@ def build_agendar_tool(tenant_id: str, tenant_service, calendar_service) ->str:
     @tool("agendar_horario", args_schema=CreateAppointmentInput)
     def agendar_horario(summary: str, start_time: str, end_time: str, description: str = "") -> str:
         """Utilize para criar um agendamento no Google Calendar após o cliente confirmar data e horário."""
-        
+
+        print(
+            f" -> [TOOL: agendar_horario] tenant_id={tenant_id} "
+            f"periodo={start_time} até {end_time}"
+        )
         # 1. Busca os dados do Tenant no repositório
         tenant = tenant_service.get_tenant_by_id(tenant_id)
-        if not tenant or not tenant.google_calendar_id:
+        google_calendar_id = tenant.get("google_calendar_id") if tenant else None
+        print(
+            f" -> [TOOL: agendar_horario] tenant_encontrado={tenant is not None} "
+            f"google_calendar_id={google_calendar_id!r}"
+        )
+        if not google_calendar_id:
+            print(" -> [TOOL: agendar_horario] Google Calendar não configurado; fallback permitido.")
             return "Erro: O tenant não possui um Google Calendar ID configurado."
 
         # 2. Checa disponibilidade na agenda antes de criar
-        is_free = calendar_service.check_availability(
-            calendar_id=tenant.google_calendar_id,
-            start_time=start_time,
-            end_time=end_time
-        )
+        try:
+            is_free = calendar_service.check_availability(
+                calendar_id=google_calendar_id,
+                start_time=start_time,
+                end_time=end_time
+            )
+        except Exception as ex:
+            print(f" -> [TOOL: agendar_horario] ERRO ao consultar disponibilidade: {type(ex).__name__}: {ex}")
+            raise
+
+        print(f" -> [TOOL: agendar_horario] horario_disponivel={is_free}")
 
         if not is_free:
             return "O horário solicitado já está ocupado na agenda. Peça para o cliente escolher outro horário."
 
         # 3. Cria o evento na agenda do cliente
-        result = calendar_service.create_event(
-            calendar_id=tenant.google_calendar_id,
-            summary=summary,
-            start_time=start_time,
-            end_time=end_time,
-            description=description
-        )
+        try:
+            result = calendar_service.create_event(
+                calendar_id=google_calendar_id,
+                summary=summary,
+                start_time=start_time,
+                end_time=end_time,
+                description=description
+            )
+        except Exception as ex:
+            print(f" -> [TOOL: agendar_horario] ERRO ao criar evento: {type(ex).__name__}: {ex}")
+            raise
+
+        print(f" -> [TOOL: agendar_horario] evento_criado event_id={result.get('event_id')!r}")
 
         return f"Agendamento confirmado com sucesso! ID do evento: {result['event_id']}"
 

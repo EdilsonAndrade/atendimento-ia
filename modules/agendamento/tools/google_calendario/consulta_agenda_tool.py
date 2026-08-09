@@ -14,17 +14,33 @@ def build_consulta_tool(tenant_id: str, tenant_service, calendar_service):
     @tool("consultar_agenda", args_schema=SearchAppointmentInput)
     def consultar_agenda(start_time: str, end_time: str, query: str = "") -> str:
         """Utilize para verificar horários ocupados/livres ou para localizar o event_id de um agendamento existente."""
-        
+
+        print(
+            f" -> [TOOL: consultar_agenda] tenant_id={tenant_id} "
+            f"periodo={start_time} até {end_time}"
+        )
         tenant = tenant_service.get_tenant_by_id(tenant_id)
-        if not tenant or not tenant.google_calendar_id:
+        google_calendar_id = tenant.get("google_calendar_id") if tenant else None
+        print(
+            f" -> [TOOL: consultar_agenda] tenant_encontrado={tenant is not None} "
+            f"google_calendar_id={google_calendar_id!r}"
+        )
+        if not google_calendar_id:
+            print(" -> [TOOL: consultar_agenda] Google Calendar não configurado; fallback permitido.")
             return "Erro: O tenant não possui um Google Calendar ID configurado."
 
-        events = calendar_service.list_events(
-            calendar_id=tenant.google_calendar_id,
-            start_time=start_time,
-            end_time=end_time,
-            query=query if query else None
-        )
+        try:
+            events = calendar_service.list_events(
+                calendar_id=google_calendar_id,
+                start_time=start_time,
+                end_time=end_time,
+                query=query if query else None
+            )
+        except Exception as ex:
+            print(f" -> [TOOL: consultar_agenda] ERRO Google Calendar: {type(ex).__name__}: {ex}")
+            raise
+
+        print(f" -> [TOOL: consultar_agenda] consulta concluída; eventos_encontrados={len(events)}")
 
         if not events:
             return "Nenhum agendamento ou compromisso encontrado para esse período/filtro."

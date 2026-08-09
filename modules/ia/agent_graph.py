@@ -359,7 +359,17 @@ def dynamic_tool_node(state: AgentState, config: RunnableConfig):
     active_tools = static_tools + dynamic_google_tools
     
     node = ToolNode(tools=active_tools, handle_tool_errors=True)
-    return node.invoke(state)
+    result = node.invoke(state)
+
+    for message in result.get("messages", []):
+        print(
+            f" -> [TOOL RESULT] tenant_id={tenant_id} "
+            f"tool={getattr(message, 'name', None)!r} "
+            f"tool_call_id={getattr(message, 'tool_call_id', None)!r} "
+            f"content={message.content!r}"
+        )
+
+    return result
 
 builder = StateGraph(AgentState)
 
