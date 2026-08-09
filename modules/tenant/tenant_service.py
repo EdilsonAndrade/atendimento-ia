@@ -12,6 +12,10 @@ class TenantService:
         # Logic to retrieve a tenant by ID using the repository
         return self.tenant_repository.get_tenant(tenant_id)
 
+    def get_tenant_by_id(self, tenant_id: str) -> dict | None:
+        """Alias for get_tenant — used by Google Calendar tools."""
+        return self.get_tenant(tenant_id)
+
     def update_tenant(self, tenant_id: str, tenant_data: dict) -> dict | None:
         # Logic to update an existing tenant using the repository
         return self.tenant_repository.update_tenant(tenant_id, tenant_data)

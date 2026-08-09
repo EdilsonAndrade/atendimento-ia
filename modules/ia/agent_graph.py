@@ -294,7 +294,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
     if hasattr(resposta_ia, 'tool_calls') and resposta_ia.tool_calls:
         print(f" -> 🚀 TOOL CALL DISPARADO AUTONOMAMENTE: {resposta_ia.tool_calls}")
     else:
-        print(" -> GPT-4o-mini processou o resultado da tool e gerou a resposta em texto.")
+        print(" -> LLM gerou resposta em texto (nenhuma tool foi chamada).")
 
     return {"messages": [resposta_ia]}
 
