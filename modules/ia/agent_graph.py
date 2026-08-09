@@ -16,6 +16,11 @@ from modules.agendamento.consulta_agenda_tool import consulta_agendamento
 from infrastructure.connection import DB_URI
 from datetime import datetime, timedelta
 from prompts.load_prompt import carregar_operacional_prompt
+from modules.agendamento.tools.google_calendario.agenda_tool import build_agendar_tool
+from modules.agendamento.tools.google_calendario.consulta_agenda_tool import build_consulta_tool
+from modules.agendamento.tools.google_calendario.delete_agenda_tool import build_delete_tool
+from modules.google_calendar.google_calendar_service import GoogleCalendarService
+from modules.tenant.tenant_service import TenantService
 # ============================================================================
 # ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
 # ============================================================================
@@ -24,6 +29,10 @@ from modules.vetorizacao.gerenciador_vetores import GerenciadorVetores  # COMENT
 llm_model = os.getenv("LLM", "llama3.3")
 api_key = os.getenv("API_KEY")
 print(f"Acessando o banco {DB_URI}")
+
+# Instâncias globais dos serviços de infraestrutura
+tenant_service = TenantService()
+calendar_service = GoogleCalendarService(service_account_path="credentials.json")
 # ============================================================================
 # PASSO 1: ESTRUTURA DO ESTADO (O "Quadro Negro" Compartilhado)
 # ============================================================================
@@ -52,11 +61,19 @@ llm = ChatOpenAI(
     temperature=0
     )
 
-# Vincula a Tool de agendamento ao modelo Llama 3.1
-tools = [consultar_horarios_disponiveis, confirmar_agendamento, cancelar_agendamento, consulta_agendamento]
-
-llm_with_tools = llm.bind_tools(tools)
-
+static_tools = [
+    consultar_horarios_disponiveis, 
+    confirmar_agendamento, 
+    cancelar_agendamento, 
+    consulta_agendamento
+]
+def get_tenant_tools(tenant_id: str, tenant_service, calendar_service):
+    return [
+        build_agendar_tool(tenant_id, tenant_service, calendar_service),
+        build_consulta_tool(tenant_id, tenant_service, calendar_service),
+        build_delete_tool(tenant_id, tenant_service, calendar_service),
+    ]
+    
 # ============================================================================
 # PASSO 3: NÓ ROTEADOR COM GUARDRAIL DE CONTEXTO DUAL (routing_agent)
 # ============================================================================
@@ -263,8 +280,16 @@ def operational_node(state: AgentState, config: RunnableConfig):
     # 2. SEGREDO DO LANGGRAPH: Montamos o SystemMessage + TODO O HISTÓRICO REAL (incluindo ToolMessages)
     mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + mensagens_chat
     
-    # 3. Invocamos a IA com a lista completa de mensagens do Estado
-    resposta_ia = llm_with_tools.invoke(mensagens_para_ia)
+    # 3. CRIAÇÃO DINÂMICA DAS TOOLS DO TENANT
+    # Gera as instâncias das ferramentas do Google Calendar para ESTE tenant
+    dynamic_google_tools = get_tenant_tools(tenant_id, tenant_service, calendar_service)
+    
+    # Unifica as ferramentas estáticas com as ferramentas do Tenant atual
+    all_active_tools = static_tools + dynamic_google_tools
+    
+    llm_dynamic = llm.bind_tools(all_active_tools)
+    
+    resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
     
     if hasattr(resposta_ia, 'tool_calls') and resposta_ia.tool_calls:
         print(f" -> 🚀 TOOL CALL DISPARADO AUTONOMAMENTE: {resposta_ia.tool_calls}")
@@ -323,26 +348,29 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
 # PASSO 7: CONSTRUÇÃO E COMPILAÇÃO DO GRAFO (Fiação do LangGraph)
 # ============================================================================
 
-# 1. Inicializamos o construtor do Grafo passando o contrato de Estado
+# O Nó de Ferramentas precisa conseguir executar a ferramenta chamada.
+# Função auxiliar para mapear dinamicamente a execução de ferramentas no ToolNode:
+def dynamic_tool_node(state: AgentState, config: RunnableConfig):
+    configurable = config.get("configurable", {})
+    tenant_id = configurable.get("tenant_id", "default_tenant")
+    
+    # Instancia as ferramentas dinâmicas para o executor conseguir rodar a tool chamada pelo LLM
+    dynamic_google_tools = get_tenant_tools(tenant_id, tenant_service, calendar_service)
+    active_tools = static_tools + dynamic_google_tools
+    
+    node = ToolNode(tools=active_tools, handle_tool_errors=True)
+    return node.invoke(state)
+
 builder = StateGraph(AgentState)
 
-# Registra os nós principais
 builder.add_node("routing_agent", routing_agent)
 builder.add_node("institutional_node", institutional_node)
 builder.add_node("operational_node", operational_node)
 builder.add_node("chitchat_node", chitchat_node)
+builder.add_node("tools", dynamic_tool_node)
 
-# COMENTÁRIO: O parâmetro handle_tool_errors instrui o LangGraph a capturar
-# exceções de execução das tools e converter em resposta de erro para a IA,
-# evitando que a execução do grafo quebre com exceção Python unhandled.
-# Registra o nó executor de Tools do LangGraph
-tool_node = ToolNode(tools=tools, handle_tool_errors=True)
-builder.add_node("tools", tool_node)
-
-# 3. Definimos o Ponto de Entrada do sistema
 builder.set_entry_point("routing_agent")
 
-# 4. Criamos a Aresta Condicional (Conditional Edge) saindo do roteador
 builder.add_conditional_edges(
     "routing_agent",
     route_decision,
@@ -353,7 +381,6 @@ builder.add_conditional_edges(
     }
 )
 
-# Aresta condicional para o nó operacional: se o LLM gerou chamada de tool, vai para 'tools', senão vai para END
 builder.add_conditional_edges(
     "operational_node",
     tools_condition,
@@ -363,11 +390,9 @@ builder.add_conditional_edges(
     }
 )
 
-# 5. Definimos as Arestas Normais (as saídas de cada estação para o Fim)
 builder.add_edge("tools", "operational_node")
 builder.add_edge("institutional_node", END)
 builder.add_edge("chitchat_node", END)
-
 
 def get_compiled_graph():
     """

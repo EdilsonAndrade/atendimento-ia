@@ -4,3 +4,4 @@
 *.bin
 db/
 data/
+credentials.json

@@ -41,3 +41,8 @@ tiktoken
 langchain-postgres
 psycopg[binary]
 pgvector
+
+#Google Calendar
+google-api-python-client
+google-auth
+google-auth-httplib2
