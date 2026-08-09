@@ -8,8 +8,8 @@ def build_delete_tool(tenant_id: str, tenant_service, calendar_service):
     """
     Fábrica da Tool para Deletar/Cancelar agendamentos.
     """
-    @tool("cancelar_agendamento", args_schema=DeleteAppointmentInput)
-    def cancelar_agendamento(event_id: str) -> str:
+    @tool("cancelar_evento_google", args_schema=DeleteAppointmentInput)
+    def cancelar_evento_google(event_id: str) -> str:
         """Utilize para cancelar um agendamento existente no Google Calendar usando o ID do evento."""
         
         tenant = tenant_service.get_tenant_by_id(tenant_id)
@@ -26,4 +26,4 @@ def build_delete_tool(tenant_id: str, tenant_service, calendar_service):
         else:
             return f"Erro ao tentar cancelar o agendamento: {result.get('message')}"
 
-    return cancelar_agendamento
+    return cancelar_evento_google
