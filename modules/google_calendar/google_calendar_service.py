@@ -17,6 +17,11 @@ class GoogleCalendarService:
             service_account_path, 
             scopes=self.scopes
         )
+        print(
+            " -> [GOOGLE CALENDAR] "
+            f"service_account={self.credentials.service_account_email!r} "
+            f"credentials_file={os.path.abspath(service_account_path)!r}"
+        )
         # Cria a conexão com a API v3 do Google Calendar
         self.service = build('calendar', 'v3', credentials=self.credentials)
 

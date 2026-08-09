@@ -73,6 +73,24 @@ def get_tenant_tools(tenant_id: str, tenant_service, calendar_service):
         build_consulta_tool(tenant_id, tenant_service, calendar_service),
         build_delete_tool(tenant_id, tenant_service, calendar_service),
     ]
+
+def get_active_tools(tenant_id: str):
+    tenant = tenant_service.get_tenant_by_id(tenant_id)
+    google_calendar_id = tenant.get("google_calendar_id") if tenant else None
+
+    if google_calendar_id:
+        active_tools = get_tenant_tools(tenant_id, tenant_service, calendar_service)
+        backend = "google_calendar"
+    else:
+        active_tools = static_tools
+        backend = "internal_fallback"
+
+    print(
+        f" -> [TOOL CONFIG] tenant_id={tenant_id} backend={backend} "
+        f"google_calendar_id={google_calendar_id!r} "
+        f"tools={[tool.name for tool in active_tools]}"
+    )
+    return active_tools
     
 # ============================================================================
 # PASSO 3: NÓ ROTEADOR COM GUARDRAIL DE CONTEXTO DUAL (routing_agent)
@@ -280,12 +298,8 @@ def operational_node(state: AgentState, config: RunnableConfig):
     # 2. SEGREDO DO LANGGRAPH: Montamos o SystemMessage + TODO O HISTÓRICO REAL (incluindo ToolMessages)
     mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + mensagens_chat
     
-    # 3. CRIAÇÃO DINÂMICA DAS TOOLS DO TENANT
-    # Gera as instâncias das ferramentas do Google Calendar para ESTE tenant
-    dynamic_google_tools = get_tenant_tools(tenant_id, tenant_service, calendar_service)
-    
-    # Unifica as ferramentas estáticas com as ferramentas do Tenant atual
-    all_active_tools = static_tools + dynamic_google_tools
+    # 3. Disponibiliza somente as tools do backend configurado para o tenant.
+    all_active_tools = get_active_tools(tenant_id)
     
     llm_dynamic = llm.bind_tools(all_active_tools)
     
@@ -354,9 +368,7 @@ def dynamic_tool_node(state: AgentState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
     
-    # Instancia as ferramentas dinâmicas para o executor conseguir rodar a tool chamada pelo LLM
-    dynamic_google_tools = get_tenant_tools(tenant_id, tenant_service, calendar_service)
-    active_tools = static_tools + dynamic_google_tools
+    active_tools = get_active_tools(tenant_id)
     
     node = ToolNode(tools=active_tools, handle_tool_errors=True)
     result = node.invoke(state)

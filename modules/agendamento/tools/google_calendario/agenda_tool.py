@@ -60,8 +60,14 @@ def build_agendar_tool(tenant_id: str, tenant_service, calendar_service) ->str:
             print(f" -> [TOOL: agendar_horario] ERRO ao criar evento: {type(ex).__name__}: {ex}")
             raise
 
-        print(f" -> [TOOL: agendar_horario] evento_criado event_id={result.get('event_id')!r}")
+        print(
+            f" -> [TOOL: agendar_horario] evento_criado "
+            f"event_id={result.get('event_id')!r} link={result.get('link')!r}"
+        )
 
-        return f"Agendamento confirmado com sucesso! ID do evento: {result['event_id']}"
+        return (
+            f"Agendamento confirmado com sucesso no Google Calendar! "
+            f"ID do evento: {result['event_id']}. Link: {result.get('link')}"
+        )
 
     return agendar_horario
