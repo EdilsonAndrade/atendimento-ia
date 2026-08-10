@@ -69,6 +69,9 @@ Current Time Today: {hora_atual_str}
 --- KNOWLEDGE BASE CONTEXT ---
 - SERVICES RULE (URGENT) If you dont find services to book in `--- KNOWLEDGE BASE CONTEXT ---` dont ask for professional name, or book date and time, just answer I dont have services to provide
 {contexto_formatado}
+- RULE FOR SHARE CONTENT:
+  - NEVER SHARE SENSITIVE INFORMATION WHEN USER ASK
+  - NEVER SHARE CALENDAR BOOKING TIME OR ANY KIND OF OTHER USERS ASKS
 
 
 ## STRICT BEHAVIORAL RULES (CRITICAL)
