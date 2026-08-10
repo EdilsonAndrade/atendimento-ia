@@ -13,6 +13,7 @@ from app.core.security import get_swagger_credentials
 from app.api.v1.webhooks.whatsapp import router as whatsapp_router
 from app.api.v1.endpoints.evolution_whatsapp_instances import router as evolution_instances_router
 from app.api.v1.endpoints.tenant import router as tenant_router
+from app.api.v1.endpoints.prompt_manager import router as prompt_manager_router
 # COMENTÁRIO: Carrega as variáveis declaradas no arquivo .env
 load_dotenv()
 
@@ -77,6 +78,10 @@ app.include_router(
     tenant_router,
     prefix="/api/v1",
     tags=["Tenants"]
+)
+app.include_router(
+    prompt_manager_router,
+    prefix="/api/v1"
 )
 
 

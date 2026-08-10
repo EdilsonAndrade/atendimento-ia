@@ -11,7 +11,7 @@ from modules.webhook.whatsapp import salvar_instancia_banco
 
 logger = logging.getLogger("whatsapp_instances")
 
-router = APIRouter(tags=["Instâncias WhatsApp"])
+router = APIRouter()
 
 # COMENTÁRIO: Schema de entrada da requisição de cadastro
 class CreateInstanceRequest(BaseModel):
