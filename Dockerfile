@@ -12,7 +12,10 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 
 # Instala dependências do sistema caso necessário
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /lib/apt/lists/*
+# COMENTÁRIO: ca-certificates é ESSENCIAL para que o google-api-python-client
+# consiga validar conexões SSL/TLS com os servidores do Google.
+# Sem ele, ocorre: SSLError: [SSL] record layer failure (_ssl.c:2590)
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates && rm -rf /lib/apt/lists/*
 
 # Copia o arquivo de dependências do Python
 COPY requirements.txt .
