@@ -1,6 +1,7 @@
 # app/api/v1/endpoints/chat.py
 import logging
 import asyncio
+import os
 from fastapi import APIRouter, Header, status, HTTPException
 from langchain_core.messages import HumanMessage
 from app.schemas.chat import MessageRequest, ChatResponse
@@ -8,6 +9,10 @@ from modules.ia.agent_graph import get_compiled_graph
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+MESSAGE_PROCESSING_GAP_SECONDS = float(os.getenv("CHAT_MESSAGE_GAP_SECONDS", "5.0"))
+_chat_locks: dict[str, asyncio.Lock] = {}
+_chat_last_finished_at: dict[str, float] = {}
 
 
 def _invoke_graph(graph_app, estado_inicial, configuracao_requisicao):
@@ -56,6 +61,8 @@ async def chat_interaction(request: MessageRequest, tenant_id: str | None = Head
     
     # Enviamos o tenant_id (para o RAG) e o thread_id (para o PostgresSaver)
     thread_id_sessao = request.thread_id or f"tenant_{tenant_id}_default"
+    conversation_key = f"{tenant_id}:{thread_id_sessao}"
+    conversation_lock = _chat_locks.setdefault(conversation_key, asyncio.Lock())
     
     configuracao_requisicao = {
         "configurable": {
@@ -65,16 +72,28 @@ async def chat_interaction(request: MessageRequest, tenant_id: str | None = Head
     }
     
     try:
-        # Puxamos o grafo compilado com o PostgresSaver.
-        # O invoke é bloqueante (LLM + Postgres), então roda em uma thread separada
-        # para não travar o event loop enquanto atende outras requisições.
-        async with asyncio.timeout(40.0):
-            result = await asyncio.to_thread(
-                _invoke_graph, graph_app, estado_inicial, configuracao_requisicao
-            )
+        # O lock é por conversa e não por tenant: clientes diferentes do mesmo tenant
+        # podem processar mensagens em paralelo sem bloquear um ao outro.
+        async with conversation_lock:
+            now = asyncio.get_running_loop().time()
+            last_finished_at = _chat_last_finished_at.get(conversation_key)
+            if last_finished_at is not None:
+                elapsed = now - last_finished_at
+                remaining = MESSAGE_PROCESSING_GAP_SECONDS - elapsed
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
 
-        resposta_final = result["messages"][-1].content
-        
+            # Puxamos o grafo compilado com o PostgresSaver.
+            # O invoke é bloqueante (LLM + Postgres), então roda em uma thread separada
+            # para não travar o event loop enquanto atende outras requisições.
+            async with asyncio.timeout(40.0):
+                result = await asyncio.to_thread(
+                    _invoke_graph, graph_app, estado_inicial, configuracao_requisicao
+                )
+
+            resposta_final = result["messages"][-1].content
+            _chat_last_finished_at[conversation_key] = asyncio.get_running_loop().time()
+
         return ChatResponse(
             tenant_id=tenant_id,
             status="success",
