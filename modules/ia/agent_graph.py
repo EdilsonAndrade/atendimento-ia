@@ -23,6 +23,7 @@ from modules.google_calendar.google_calendar_service import GoogleCalendarServic
 from modules.tenant.tenant_service import TenantService
 from util.ai_helpers import sanitize_for_openai_strict_format  # COMENTÁRIO: Importa a função de higienização de histórico
 from langchain_core.messages import trim_messages
+from util.ai_helpers import extract_customer_profile, build_customer_context_block
 # ============================================================================
 # ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
 # ============================================================================
@@ -288,6 +289,12 @@ def operational_node(state: AgentState, config: RunnableConfig):
                             contexto_formatado=contexto_formatado
                         )
 
+    # Injeta dados de contato já vistos na sessão para evitar perguntas repetidas.
+    profile = extract_customer_profile(state["messages"])
+    customer_context = build_customer_context_block(profile)
+    if customer_context:
+        system_prompt_str = f"{system_prompt_str}{customer_context}"
+
     # 1. Filtramos as decisões do roteador das mensagens
     mensagens_chat = [
         m for m in state["messages"] 
@@ -301,7 +308,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
         mensagens_chat,
         strategy="last",
         token_counter=len,          # Trata cada mensagem como 1 unidade (corta por quantidade)
-        max_tokens=10,               # Mantém no máximo as últimas 10 mensagens
+        max_tokens=14,               # Mantém janela maior para reduzir perda de contexto imediato
         start_on="human",            # Garante que o histórico corte sempre até achar uma mensagem do usuário
         end_on=("human", "tool"),    # Impede encerramento inválido em AIMessage sem resposta
         include_system=False         # O SystemMessage é montado separadamente na linha abaixo

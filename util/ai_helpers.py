@@ -1,4 +1,5 @@
 import copy
+import re
 from langchain_core.messages import AIMessage, ToolMessage
 
 
@@ -69,3 +70,62 @@ def sanitize_for_openai_strict_format(messages: list) -> list:
             i += 1
             
     return safe_messages
+
+
+
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+PHONE_RE = re.compile(r"(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?\d{4,5}[-\s]?\d{4}")
+NAME_RE = re.compile(r"(?:meu nome(?: completo)?\s*é|nome\s*[:\-]|sou)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s']{2,50})", re.IGNORECASE)
+
+
+def extract_customer_profile(messages: Sequence[BaseMessage]) -> dict:
+    """Extrai dados de contato já informados ao longo da sessão."""
+    profile = {"nome": None, "email": None, "telefone": None}
+
+    for msg in reversed(messages):
+        if isinstance(msg, ToolMessage):
+            continue
+
+        content = str(getattr(msg, "content", "") or "")
+        if not content:
+            continue
+
+        if not profile["email"]:
+            m_email = EMAIL_RE.search(content)
+            if m_email:
+                profile["email"] = m_email.group(0)
+
+        if not profile["telefone"]:
+            m_phone = PHONE_RE.search(content)
+            if m_phone:
+                profile["telefone"] = m_phone.group(0)
+
+        if not profile["nome"]:
+            m_name = NAME_RE.search(content)
+            if m_name:
+                profile["nome"] = " ".join(m_name.group(1).split())
+
+        if profile["nome"] and profile["email"] and profile["telefone"]:
+            break
+
+    return profile
+
+
+def build_customer_context_block(profile: dict) -> str:
+    dados = []
+    if profile.get("nome"):
+        dados.append(f"- Nome: {profile['nome']}")
+    if profile.get("email"):
+        dados.append(f"- Email: {profile['email']}")
+    if profile.get("telefone"):
+        dados.append(f"- Telefone: {profile['telefone']}")
+
+    if not dados:
+        return ""
+
+    return (
+        "\n\nKNOWN CUSTOMER CONTEXT (SESSION MEMORY):\n"
+        + "\n".join(dados)
+        + "\nCRITICAL: Reuse these fields when the user asks to continue booking/rescheduling. "
+          "Do not ask again for fields that are already known; at most confirm in one short sentence."
+    )
