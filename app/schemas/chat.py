@@ -8,6 +8,11 @@ class MessageRequest(BaseModel):
         examples=["Qual o horário disponível para corte hoje?"], 
         description="Mensagem ou pergunta textual enviada pelo usuário final."
     )
+    tenant_id: Optional[str] = Field(
+        None,
+        examples=["site-tenant-123", "cliente-abc"],
+        description="Identificador do tenant quando a origem é uma plataforma externa, como o site."
+    )
     thread_id: Optional[str] = Field(
         "default_session", 
         examples=["5511999998888"], 

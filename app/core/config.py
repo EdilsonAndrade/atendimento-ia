@@ -12,7 +12,8 @@ class Settings(BaseSettings):
         "## Motor de Agentes Inteligentes Multi-Tenant (SaaS)\n\n"
         "Esta API orquestra Grafos de Estados com LangGraph e indexações "
         "vetoriais isoladas por cliente (Tenant ID).\n"
-        "**Regra Mandatória:** Todas as requisições exigem o header `X-Tenant-ID`."
+        "**Regra Operacional:** o header `X-Tenant-ID` é obrigatório para integrações e WhatsApp; "
+        "o chat web pode complementar com `tenant_id` no body quando necessário."
     )
     
     class Config:

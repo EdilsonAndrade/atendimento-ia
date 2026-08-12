@@ -1,5 +1,3 @@
-from wsgiref import headers
-
 from langchain_core.messages import HumanMessage
 import psycopg
 import asyncio
@@ -29,6 +27,17 @@ try:
 except Exception as e:
     print(f"⚠️ Alerta: Erro ao inicializar o grafo com PostgresSaver: {e}")
     graph_app = None
+
+
+def _invoke_graph(estado_inicial, configuracao_requisicao):
+    if graph_app is None:
+        raise ValueError("O grafo compilado não foi inicializado corretamente.")
+
+    invoke_fn = getattr(graph_app, "invoke", None)
+    if invoke_fn is None:
+        raise ValueError("O grafo compilado não expõe o método invoke().")
+
+    return invoke_fn(estado_inicial, configuracao_requisicao)
 
 
 def _get_conversation_key(tenant_id: str, sender_phone: str, instance_name: str) -> str:
@@ -163,9 +172,7 @@ async def processar_mensagem_e_responder(
             # COMENTÁRIO 1: Aumentado timeout para 60s para dar tempo da LLM + DB sem dar timeout
             async with asyncio.timeout(60.0):
                 result = await asyncio.to_thread(
-                    graph_app.invoke,
-                    estado_inicial,
-                    configuracao_requisicao
+                    _invoke_graph, estado_inicial, configuracao_requisicao
                 )
 
             # Se o Grafo executou com sucesso, extrai o texto da resposta
