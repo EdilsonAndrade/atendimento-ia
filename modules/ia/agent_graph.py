@@ -26,6 +26,8 @@ from langchain_core.messages import trim_messages
 from util.ai_helpers import (
     extract_customer_profile,
     build_customer_context_block,
+    should_block_unverified_availability_response,
+    should_retry_availability_tool_call,
     should_retry_booking_tool_call,
     should_block_unverified_booking_response,
 )
@@ -331,6 +333,19 @@ def operational_node(state: AgentState, config: RunnableConfig):
     
     resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
 
+    if should_retry_availability_tool_call(state["messages"], resposta_ia):
+        print(" -> [AVAILABILITY GUARD] Resposta textual sobre disponibilidade. Reforcando uso obrigatorio de tool.")
+        retry_messages = [
+            SystemMessage(content=system_prompt_str),
+            SystemMessage(content=(
+                "CRITICAL OVERRIDE: The latest user message asks about schedule availability or whether a time slot is free/busy. "
+                "You MUST call consultar_agenda (or the tenant's available calendar tool) before saying whether the slot is occupied or free. "
+                "Do not answer from memory or from the knowledge base. If the exact time range is missing, ask only for the missing time. "
+                "Never claim a slot is occupied or available unless a tool has just succeeded."
+            )),
+        ] + historico_limitado
+        resposta_ia = llm_dynamic.invoke(retry_messages)
+
     if should_retry_booking_tool_call(state["messages"], resposta_ia):
         print(" -> [BOOKING GUARD] Resposta textual apos confirmacao. Reforcando uso obrigatorio de tool.")
         retry_messages = [
@@ -372,6 +387,13 @@ def operational_node(state: AgentState, config: RunnableConfig):
         resposta_ia = AIMessage(content=(
             "Ainda nao consegui registrar esse agendamento no calendario. "
             "Nenhum horario foi reservado ate agora. Vou precisar validar os dados e tentar novamente antes de confirmar."
+        ))
+
+    if should_block_unverified_availability_response(state["messages"], resposta_ia):
+        print(" -> [AVAILABILITY GUARD] Bloqueando afirmacao de disponibilidade sem consulta ao calendario.")
+        resposta_ia = AIMessage(content=(
+            "Ainda nao consegui consultar a agenda para confirmar esse horario. "
+            "Vou precisar validar a disponibilidade no calendario antes de dizer se esta ocupado ou livre."
         ))
 
     return {"messages": [resposta_ia]}

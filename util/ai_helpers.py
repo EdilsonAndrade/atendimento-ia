@@ -134,6 +134,7 @@ def build_customer_context_block(profile: dict) -> str:
 
 
 BOOKING_TOOL_NAMES = {"agendar_horario", "confirmar_agendamento"}
+AVAILABILITY_TOOL_NAMES = {"consultar_agenda", "consultar_horarios_disponiveis"}
 BOOKING_SUCCESS_MARKERS = (
     "agendamento confirmado com sucesso",
     "agendamento realizado com sucesso",
@@ -167,6 +168,48 @@ AFFIRMATIVE_MARKERS = (
     "fechado",
     "isso",
     "correto",
+)
+
+AVAILABILITY_REQUEST_MARKERS = (
+    "tem horario",
+    "tem horarios",
+    "tem vaga",
+    "esta ocupado",
+    "está ocupado",
+    "esta livre",
+    "está livre",
+    "disponivel",
+    "disponível",
+    "disponibilidade",
+    "verificar disponibilidade",
+    "consultar agenda",
+    "consultar horarios",
+    "consultar horários",
+    "pode ser",
+    "pode marcar",
+    "pode agendar",
+    "qual horario",
+    "qual horário",
+)
+AVAILABILITY_SUCCESS_MARKERS = (
+    "esta ocupado",
+    "está ocupado",
+    "estao ocupados",
+    "estão ocupados",
+    "esta livre",
+    "está livre",
+    "disponivel",
+    "disponível",
+    "ocupado",
+    "livre",
+    "horarios ocupados",
+    "horários ocupados",
+)
+AVAILABILITY_BLOCK_MARKERS = (
+    "nenhum horario foi reservado",
+    "nenhum horário foi reservado",
+    "nao consegui registrar esse agendamento",
+    "não consegui registrar esse agendamento",
 )
 
 
@@ -215,6 +258,30 @@ def has_pending_booking_confirmation(messages: Sequence[BaseMessage]) -> bool:
     return is_affirmative_text(last_human) and response_reasks_booking_confirmation(previous_ai)
 
 
+def latest_user_message(messages: Sequence[BaseMessage]) -> str:
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) == "human":
+            return str(getattr(msg, "content", "") or "")
+    return ""
+
+
+def user_is_asking_for_availability(messages: Sequence[BaseMessage]) -> bool:
+    normalized = normalize_text(latest_user_message(messages))
+    return any(marker in normalized for marker in AVAILABILITY_REQUEST_MARKERS)
+
+
+def recent_availability_tool_succeeded(messages: Sequence[BaseMessage]) -> bool:
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) == "human":
+            break
+
+        if isinstance(msg, ToolMessage) and getattr(msg, "name", None) in AVAILABILITY_TOOL_NAMES:
+            normalized = normalize_text(str(getattr(msg, "content", "") or ""))
+            return any(marker in normalized for marker in AVAILABILITY_SUCCESS_MARKERS)
+
+    return False
+
+
 def recent_booking_tool_succeeded(messages: Sequence[BaseMessage]) -> bool:
     for msg in reversed(messages):
         if getattr(msg, "type", None) == "human":
@@ -249,4 +316,39 @@ def should_block_unverified_booking_response(messages: Sequence[BaseMessage], ai
     return response_claims_booking_success(content) or (
         has_pending_booking_confirmation(messages)
         and response_reasks_booking_confirmation(content)
+    )
+
+
+def should_retry_availability_tool_call(messages: Sequence[BaseMessage], ai_response: AIMessage) -> bool:
+    if getattr(ai_response, "tool_calls", None):
+        return False
+
+    if recent_availability_tool_succeeded(messages):
+        return False
+
+    if not user_is_asking_for_availability(messages):
+        return False
+
+    content = str(getattr(ai_response, "content", "") or "")
+    return response_claims_availability(content)
+
+
+def response_claims_availability(content: str) -> bool:
+    normalized = normalize_text(content)
+    return any(marker in normalized for marker in AVAILABILITY_SUCCESS_MARKERS)
+
+
+def should_block_unverified_availability_response(messages: Sequence[BaseMessage], ai_response: AIMessage) -> bool:
+    if getattr(ai_response, "tool_calls", None):
+        return False
+
+    if recent_availability_tool_succeeded(messages):
+        return False
+
+    if not user_is_asking_for_availability(messages):
+        return False
+
+    content = str(getattr(ai_response, "content", "") or "")
+    return response_claims_availability(content) or any(
+        marker in normalize_text(content) for marker in AVAILABILITY_BLOCK_MARKERS
     )
