@@ -21,6 +21,7 @@ from modules.agendamento.tools.google_calendario.consulta_agenda_tool import bui
 from modules.agendamento.tools.google_calendario.delete_agenda_tool import build_delete_tool
 from modules.google_calendar.google_calendar_service import GoogleCalendarService
 from modules.tenant.tenant_service import TenantService
+from util.ai_helpers import sanitize_history_messages  # COMENTÁRIO: Importa a função de higienização de histórico
 # LINHAS DE ALTERAÇÃO - ADICIONAR IMPORT DO TRIM_MESSAGES
 # COMENTÁRIO: Importa a função nativa do LangChain para higienização e corte seguro de histórico.
 from langchain_core.messages import SystemMessage, AIMessage, HumanMessage, ToolMessage, trim_messages
@@ -245,20 +246,7 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     return {"messages": [AIMessage(content=resposta_ia.content)]}
 
 
-def remove_orphaned_tool_messages(messages: list) -> list:
-    # COMENTÁRIO: Mapeia todos os IDs de chamadas de ferramentas das AIMessages que ainda estão vivas no histórico
-    ids_validos = {
-        tc["id"]
-        for m in messages
-        if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
-        for tc in m.tool_calls
-    }
-    
-    # COMENTÁRIO: Mantém no histórico apenas mensagens comuns ou ToolMessages que possuem um pai válido
-    return [
-        m for m in messages
-        if not (isinstance(m, ToolMessage) and m.tool_call_id not in ids_validos)
-    ]
+
     
 # ============================================================================
 # PASSO 5: NÓ OPERACIONAL (Corrigido sem Loop Infinito)
@@ -311,8 +299,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
         end_on=("human", "tool"),    # Impede encerramento inválido em AIMessage sem resposta
         include_system=False         # O SystemMessage é montado separadamente na linha abaixo
     )
-    
-    historico_limitado = remove_orphaned_tool_messages(historico_bruto)
+    historico_limitado = sanitize_history_messages(historico_bruto)
 
     # 2. SEGREDO DO LANGGRAPH: Montamos o SystemMessage + TODO O HISTÓRICO REAL (incluindo ToolMessages)
     # REMOVER: mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + mensagens_chat
