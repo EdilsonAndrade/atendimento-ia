@@ -1,11 +1,10 @@
 # Injeção de Dependências comuns (ex: extração de Tenant)
 from fastapi import Header, HTTPException, status
 
-async def get_tenant_id(x_tenant_id: str= Header(...,alias="X-Tenant-ID", description="Identificador único e exclusivo do cliente assinante do SaaS")) -> str:
+async def get_tenant_id(x_tenant_id: str = Header(..., alias="X-Tenant-ID", description="Identificador único e exclusivo do cliente assinante do SaaS")) -> str:
     """
     Dependência mestre para extração e validação do Tenant.
-    No futuro, este bloco consultará o banco central PostgreSQL para verificar se o ID do
-    cliente está ativo e com a assinatura paga.
+    Para integrações e WhatsApp, o tenant deve ser informado pelo header.
     """
     if not x_tenant_id.strip():
         raise HTTPException(

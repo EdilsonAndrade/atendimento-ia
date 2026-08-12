@@ -14,13 +14,24 @@ from modules.agendamento.agenda_tool import consultar_horarios_disponiveis
 from modules.agendamento.delete_agenda_tool import cancelar_agendamento
 from modules.agendamento.consulta_agenda_tool import consulta_agendamento
 from infrastructure.connection import DB_URI
-from datetime import datetime, timedelta
 from prompts.load_prompt import carregar_operacional_prompt
 from modules.agendamento.tools.google_calendario.agenda_tool import build_agendar_tool
 from modules.agendamento.tools.google_calendario.consulta_agenda_tool import build_consulta_tool
 from modules.agendamento.tools.google_calendario.delete_agenda_tool import build_delete_tool
 from modules.google_calendar.google_calendar_service import GoogleCalendarService
 from modules.tenant.tenant_service import TenantService
+from util.ai_helpers import sanitize_for_openai_strict_format  # COMENTÁRIO: Importa a função de higienização de histórico
+from langchain_core.messages import trim_messages
+from util.ai_helpers import (
+    extract_customer_profile,
+    build_customer_context_block,
+    build_booking_retry_context_block,
+    should_block_unverified_availability_response,
+    should_retry_availability_tool_call,
+    should_retry_booking_tool_call,
+    should_block_unverified_booking_response,
+)
+from util.time_helpers import get_tabela_dias
 # ============================================================================
 # ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
 # ============================================================================
@@ -62,8 +73,13 @@ llm = ChatOpenAI(
     model=llm_model, 
     api_key=api_key,
     base_url="https://api.deepseek.com/v1", # Garanta que a base URL aponta para a API do DeepSeek
-    temperature=0
-    )
+    temperature=0, 
+    extra_body={
+        "thinking":{
+            "type": "disabled"
+        }
+    }
+)
 
 static_tools = [
     consultar_horarios_disponiveis, 
@@ -102,27 +118,28 @@ def get_active_tools(tenant_id: str):
 def routing_agent(state: AgentState, config: RunnableConfig):
     """
     Classifica a intenção combinando Guardrail de estado (respostas a perguntas anteriores)
-    e envio de histórico nativo para o GPT-4o-mini.
+    e envio de histórico nativo para o LLM.
     """
-    print("\n --- [NÓ: routing_agent] GPT-4o-mini analisando a intenção do usuário... ---")
+    print("\n --- [NÓ: routing_agent] LLM analisando a intenção do usuário... ---")
     
-    # 1. Filtra as mensagens reais do chat
-    historico_limpo = [
-        m for m in state["messages"] 
+    # 1. Separa histórico textual para o guardrail rápido
+    historico_textual = [
+        m for m in state["messages"]
         if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
+        and not isinstance(m, ToolMessage)
     ]
     
     # GUARDRAIL AUTOMÁTICO: Se a IA fez uma pergunta operacional na mensagem anterior
     # (ex: pediu horário, barbeiro, confirmação), a resposta do usuário É OPERACIONAL.
-    if len(historico_limpo) >= 2:
-        ultima_msg_ia = str(historico_limpo[-2].content).lower() if historico_limpo[-2].type == "ai" else ""
+    if len(historico_textual) >= 2:
+        ultima_msg_ia = str(historico_textual[-2].content).lower() if historico_textual[-2].type == "ai" else ""
         gatilhos_operacionais = ["horário", "horario", "barbeiro", "profissional", "serviço", "servico", "agendar", "data", "dia"]
         
         if any(gatilho in ultima_msg_ia for gatilho in gatilhos_operacionais):
             print(" -> 🛡️ Guardrail Ativo: Usuário está respondendo a uma pergunta de agendamento. Forçando OPERATIONAL!")
             return {"messages": [AIMessage(content="Routing decision: OPERATIONAL")]}
 
-    # 2. Se não caiu no guardrail, aciona o GPT-4o-mini passando as mensagens nativas
+    # 2. Se não caiu no guardrail, aciona o LLM passando as mensagens nativas
     system_prompt = SystemMessage(content=(
         "You are an orchestrator router for a business booking application.\n"
         "Classify the intent of the user's latest response based on the conversation context.\n\n"
@@ -134,15 +151,23 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'."
     ))
     
-    # COMENTÁRIO: Filtra apenas mensagens de usuário e assistente (descartando ToolMessages e decisões de roteamento anteriores)
-    # Isso impede que cortes no histórico deixem mensagens de ferramentas órfãs enviadas para a API.
-    historico_limpo = [
-        m for m in state["messages"] 
+    # 3. Para o roteador, preserva a sequência AI(tool_calls)->ToolMessage e sanitiza.
+    # Isso evita o erro 400 quando há tool_calls no histórico persistido.
+    historico_com_tools = [
+        m for m in state["messages"]
         if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
-        and not isinstance(m, ToolMessage)
     ]
-   # Monta o array limpo sem o risco de enviar ToolMessages sem seu pai AIMessage
-    mensagens_para_ia = [system_prompt] + historico_limpo[-6:]
+    historico_bruto = trim_messages(
+        historico_com_tools,
+        strategy="last",
+        token_counter=len,
+        max_tokens=8,
+        start_on="human",
+        end_on=("human", "tool"),
+        include_system=False,
+    )
+    historico_sanitizado = sanitize_for_openai_strict_format(historico_bruto)
+    mensagens_para_ia = [system_prompt] + historico_sanitizado
     
     resposta = llm.invoke(mensagens_para_ia)
     decisao = resposta.content.strip().upper()
@@ -237,6 +262,8 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     return {"messages": [AIMessage(content=resposta_ia.content)]}
 
 
+
+    
 # ============================================================================
 # PASSO 5: NÓ OPERACIONAL (Corrigido sem Loop Infinito)
 # ============================================================================
@@ -244,7 +271,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
     """
     Nó Operacional que preserva as ToolMessages no estado para evitar Loops Infinitos.
     """
-    print("\n --- [NÓ: operational_node] GPT-4o-mini avaliando fluxo de atendimento... ---")
+    print("\n --- [NÓ: operational_node] Modelo avaliando fluxo de atendimento... ---")
     
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
@@ -270,31 +297,106 @@ def operational_node(state: AgentState, config: RunnableConfig):
                             contexto_formatado=contexto_formatado
                         )
 
+    # Injeta dados de contato já vistos na sessão para evitar perguntas repetidas.
+    profile = extract_customer_profile(state["messages"])
+    customer_context = build_customer_context_block(profile)
+    if customer_context:
+        system_prompt_str = f"{system_prompt_str}{customer_context}"
+
     # 1. Filtramos as decisões do roteador das mensagens
     mensagens_chat = [
         m for m in state["messages"] 
         if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
     ]
+   # LINHAS DE ALTERAÇÃO - SUBSTITUIR A TRUNCAGEM MANUAL PELO TRIM_MESSAGES
+    # COMENTÁRIO: Substitui o slice manual e o 'if' de shift pelo trim_messages nativo.
+    # O 'token_counter=len' conta mensagens (não tokens), e o 'start_on="human"' garante
+    # que o histórico nunca comece com ToolMessage órfã, recuando quantas posições forem necessárias.
+    historico_bruto = trim_messages(
+        mensagens_chat,
+        strategy="last",
+        token_counter=len,          # Trata cada mensagem como 1 unidade (corta por quantidade)
+        max_tokens=50,               # Mantém janela maior para reduzir perda de contexto imediato
+        start_on="human",            # Garante que o histórico corte sempre até achar uma mensagem do usuário
+        end_on=("human", "tool"),    # Impede encerramento inválido em AIMessage sem resposta
+        include_system=False         # O SystemMessage é montado separadamente na linha abaixo
+    )
+    historico_limitado = sanitize_for_openai_strict_format(historico_bruto)
 
     # 2. SEGREDO DO LANGGRAPH: Montamos o SystemMessage + TODO O HISTÓRICO REAL (incluindo ToolMessages)
-    mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + mensagens_chat
+    # REMOVER: mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + mensagens_chat
+    mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + historico_limitado
     
     # 3. Disponibiliza somente as tools do backend configurado para o tenant.
     all_active_tools = get_active_tools(tenant_id)
     
-    llm_dynamic = llm.bind_tools(all_active_tools,parallel_tool_calls=False)
+    llm_dynamic = llm.bind_tools(all_active_tools, parallel_tool_calls=False)
     
     resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
-    # BLINDAGEM: Se a API externa ignorar o parâmetro e mandar várias tool calls de uma vez,
-    # mantemos apenas a primeira, forçando a execução estritamente sequencial.
+
+    if should_retry_availability_tool_call(state["messages"], resposta_ia):
+        print(" -> [AVAILABILITY GUARD] Resposta textual sobre disponibilidade. Reforcando uso obrigatorio de tool.")
+        retry_messages = [
+            SystemMessage(content=system_prompt_str),
+            SystemMessage(content=(
+                "CRITICAL OVERRIDE: The latest user message asks about schedule availability or whether a time slot is free/busy. "
+                "You MUST call consultar_agenda (or the tenant's available calendar tool) before saying whether the slot is occupied or free. "
+                "Do not answer from memory or from the knowledge base. If the exact time range is missing, ask only for the missing time. "
+                "Never claim a slot is occupied or available unless a tool has just succeeded."
+            )),
+        ] + historico_limitado
+        resposta_ia = llm_dynamic.invoke(retry_messages)
+
+    if should_retry_booking_tool_call(state["messages"], resposta_ia):
+        print(" -> [BOOKING GUARD] Resposta textual apos confirmacao. Reforcando uso obrigatorio de tool.")
+        retry_messages = [
+            SystemMessage(content=system_prompt_str),
+            SystemMessage(content=(
+                "CRITICAL OVERRIDE: The latest user message is an explicit confirmation in a booking flow. "
+                "Do not ask for confirmation again and do not merely summarize the booking. "
+                "If the chat history already contains service, date, start time, end time, and customer data, "
+                "you MUST call the correct booking tool now. If any required field is missing, ask only for the missing field. "
+                "Never claim that the booking is confirmed unless a tool has just succeeded."
+            )),
+            SystemMessage(content=build_booking_retry_context_block(state["messages"], profile)),
+        ] + historico_limitado
+        resposta_ia = llm_dynamic.invoke(retry_messages)
+
+    # BLINDAGEM: Se o modelo ignorar a instrução do prompt e ainda assim mandar várias
+    # tool calls de uma vez, mantemos apenas a primeira. O ideal é que o PROMPT já
+    # oriente o modelo a pedir ao cliente para enviar um agendamento por vez quando
+    # detectar múltiplos pedidos na mesma mensagem — isso aqui é só a última linha
+    # de defesa, não a solução principal.
     if hasattr(resposta_ia, "tool_calls") and resposta_ia.tool_calls and len(resposta_ia.tool_calls) > 1:
-        print(f" -> 🛡️ [GUARDRAIL] API enviou {len(resposta_ia.tool_calls)} tool calls em paralelo. Limitando a apenas 1 por segurança.")
+        total_recebido = len(resposta_ia.tool_calls)
+        descartadas = resposta_ia.tool_calls[1:]
+        print(f" -> 🛡️ [GUARDRAIL] Modelo tentou {total_recebido} tool calls em paralelo apesar "
+              f"da instrução do prompt. Mantendo: {resposta_ia.tool_calls[0]['name']}. "
+              f"Descartadas: {[tc['name'] for tc in descartadas]}")
+
         resposta_ia.tool_calls = resposta_ia.tool_calls[:1]
-    
+
+        if "tool_calls" in resposta_ia.additional_kwargs:
+            resposta_ia.additional_kwargs["tool_calls"] = resposta_ia.additional_kwargs["tool_calls"][:1]
+
     if hasattr(resposta_ia, 'tool_calls') and resposta_ia.tool_calls:
         print(f" -> 🚀 TOOL CALL DISPARADO AUTONOMAMENTE: {resposta_ia.tool_calls}")
     else:
         print(" -> LLM gerou resposta em texto (nenhuma tool foi chamada).")
+
+    if should_block_unverified_booking_response(state["messages"], resposta_ia):
+        print(" -> [BOOKING GUARD] Bloqueando confirmacao sem persistencia em calendario.")
+        resposta_ia = AIMessage(content=(
+            "Ainda nao consegui registrar esse agendamento no calendario. "
+            "Nenhum horario foi reservado ate agora. Vou precisar validar os dados e tentar novamente antes de confirmar."
+        ))
+
+    if should_block_unverified_availability_response(state["messages"], resposta_ia):
+        print(" -> [AVAILABILITY GUARD] Bloqueando afirmacao de disponibilidade sem consulta ao calendario.")
+        resposta_ia = AIMessage(content=(
+            "Ainda nao consegui consultar a agenda para confirmar esse horario. "
+            "Vou precisar validar a disponibilidade no calendario antes de dizer se esta ocupado ou livre."
+        ))
 
     return {"messages": [resposta_ia]}
 
@@ -314,13 +416,21 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
         with open(caminho_guardrail, "r", encoding="utf-8") as f:
             guardrails_text = f.read()
 
-    # 2. Filtra APENAS mensagens de texto do usuário e assistente (descarta ToolMessages e decisões do roteador)
-    historico_limpo = []
-    for msg in state["messages"]:
-        if isinstance(msg, HumanMessage):
-            historico_limpo.append(msg)
-        elif isinstance(msg, AIMessage) and not str(msg.content).startswith("Routing decision:"):
-            historico_limpo.append(msg)
+    # 2. Preserva histórico real (incluindo ToolMessages) e sanitiza sequência.
+    historico_com_tools = [
+        msg for msg in state["messages"]
+        if not (isinstance(msg, AIMessage) and str(msg.content).startswith("Routing decision:"))
+    ]
+    historico_bruto = trim_messages(
+        historico_com_tools,
+        strategy="last",
+        token_counter=len,
+        max_tokens=6,
+        start_on="human",
+        end_on=("human", "tool"),
+        include_system=False,
+    )
+    historico_sanitizado = sanitize_for_openai_strict_format(historico_bruto)
 
     # 3. MONTA O PROMPT CORRETO COMO SystemMessage (E NÃO AIMessage)
     system_prompt = SystemMessage(content=(
@@ -331,8 +441,8 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
         "ALWAYS respond in the exact same language as the user."
     ))
     
-    # Envia o SystemMessage no topo + as últimas 4 mensagens limpas do chat
-    mensagens_para_ia = [system_prompt] + historico_limpo[-4:]
+    # Envia o SystemMessage no topo + histórico sanitizado
+    mensagens_para_ia = [system_prompt] + historico_sanitizado
     
     try:
         resposta_ia = llm.invoke(mensagens_para_ia)
@@ -421,34 +531,6 @@ def get_compiled_graph():
     
     # Compila e retorna o grafo com memória persistente
     return builder.compile(checkpointer=checkpointer)
-
-def get_tabela_dias(quantidade_dias: int):
-    now = datetime.now()
-    data_hoje_iso = now.strftime("%Y-%m-%d")
-    data_formatada_br = now.strftime("%d/%m/%Y")
-    hora_atual_str = now.strftime("%H:%M")
-
-    # Mapeamento dos dias da semana em português
-    dias_semana_pt = {
-        0: "segunda-feira",
-        1: "terça-feira",
-        2: "quarta-feira",
-        3: "quinta-feira",
-        4: "sexta-feira",
-        5: "sábado",
-        6: "domingo"
-    }
-
-    # Monta uma tabela dos próximos 7 dias calculados matematicamente pelo Python
-    tabela_dias = []
-    for i in range(quantidade_dias):
-        dia_calc = now + timedelta(days=i)
-        nome_dia = "hoje" if i == 0 else ("amanhã" if i == 1 else dias_semana_pt[dia_calc.weekday()])
-        data_iso = dia_calc.strftime("%Y-%m-%d")
-        data_br = dia_calc.strftime("%d/%m/%Y")
-        tabela_dias.append(f"• {nome_dia.capitalize()} ({dias_semana_pt[dia_calc.weekday()]}): {data_br} (ISO: '{data_iso}')")
-    
-    return tabela_dias, hora_atual_str, data_hoje_iso
 
 # ============================================================================
 # EXECUÇÃO DO AGENTE (Simulando uma chamada de API Multi-Tenant)

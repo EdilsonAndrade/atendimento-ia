@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from util.time_helpers import ensure_business_timezone
 
 class GoogleCalendarService:
     def __init__(self, service_account_path: str = "credentials.json"):
@@ -29,8 +30,8 @@ class GoogleCalendarService:
         """
         Verifica se há conflitos de horários na agenda do tenant.
         """
-        start_iso = start_time.isoformat() if isinstance(start_time, datetime) else start_time
-        end_iso = end_time.isoformat() if isinstance(end_time, datetime) else end_time
+        start_iso = ensure_business_timezone(start_time)
+        end_iso = ensure_business_timezone(end_time)
 
         events_result = self.service.events().list(
             calendarId=calendar_id,
@@ -54,8 +55,8 @@ class GoogleCalendarService:
         """
         Insere o agendamento no Google Calendar do cliente/tenant.
         """
-        start_iso = start_time.isoformat() if isinstance(start_time, datetime) else start_time
-        end_iso = end_time.isoformat() if isinstance(end_time, datetime) else end_time
+        start_iso = ensure_business_timezone(start_time)
+        end_iso = ensure_business_timezone(end_time)
 
         event_body = {
             'summary': summary,
@@ -92,8 +93,8 @@ class GoogleCalendarService:
         Lista/busca eventos em um intervalo de tempo para consultar ou localizar o event_id.
         Permite filtrar pelo nome do cliente usando o parâmetro `query` (q).
         """
-        start_iso = start_time.isoformat() if isinstance(start_time, datetime) else start_time
-        end_iso = end_time.isoformat() if isinstance(end_time, datetime) else end_time
+        start_iso = ensure_business_timezone(start_time)
+        end_iso = ensure_business_timezone(end_time)
 
         params = {
             "calendarId": calendar_id,
