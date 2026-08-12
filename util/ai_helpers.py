@@ -185,11 +185,26 @@ AVAILABILITY_REQUEST_MARKERS = (
     "consultar agenda",
     "consultar horarios",
     "consultar horários",
+    "qual horario",
+    "qual horário",
+)
+BOOKING_SELECTION_MARKERS = (
     "pode ser",
     "pode marcar",
     "pode agendar",
-    "qual horario",
-    "qual horário",
+    "quero as",
+    "quero o",
+    "vou querer",
+    "prefiro as",
+    "prefiro o",
+    "marca as",
+    "marca pra",
+    "agenda as",
+    "agenda pra",
+    "agendar as",
+    "agendar pra",
+    "fechar as",
+    "fechado as",
 )
 AVAILABILITY_SUCCESS_MARKERS = (
     "esta ocupado",
@@ -267,7 +282,14 @@ def latest_user_message(messages: Sequence[BaseMessage]) -> str:
 
 def user_is_asking_for_availability(messages: Sequence[BaseMessage]) -> bool:
     normalized = normalize_text(latest_user_message(messages))
+    if any(marker in normalized for marker in BOOKING_SELECTION_MARKERS):
+        return False
     return any(marker in normalized for marker in AVAILABILITY_REQUEST_MARKERS)
+
+
+def user_selected_booking_slot(messages: Sequence[BaseMessage]) -> bool:
+    normalized = normalize_text(latest_user_message(messages))
+    return any(marker in normalized for marker in BOOKING_SELECTION_MARKERS)
 
 
 def recent_availability_tool_succeeded(messages: Sequence[BaseMessage]) -> bool:
@@ -293,6 +315,49 @@ def recent_booking_tool_succeeded(messages: Sequence[BaseMessage]) -> bool:
     return False
 
 
+def recent_tool_content(messages: Sequence[BaseMessage], tool_names: set[str]) -> str:
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) == "human":
+            break
+
+        if isinstance(msg, ToolMessage) and getattr(msg, "name", None) in tool_names:
+            return str(getattr(msg, "content", "") or "")
+
+    return ""
+
+
+def build_booking_retry_context_block(messages: Sequence[BaseMessage], profile: dict | None = None) -> str:
+    latest_user = latest_user_message(messages)
+    availability_result = recent_tool_content(messages, AVAILABILITY_TOOL_NAMES)
+    booking_result = recent_tool_content(messages, BOOKING_TOOL_NAMES)
+
+    lines = ["BOOKING RETRY CONTEXT (USE THIS TO CALL agendar_horario):"]
+
+    if latest_user:
+        lines.append(f"- Latest user message: {latest_user}")
+
+    if availability_result:
+        lines.append(f"- Latest availability result: {availability_result}")
+
+    if booking_result:
+        lines.append(f"- Latest booking tool result: {booking_result}")
+
+    if profile:
+        if profile.get("nome"):
+            lines.append(f"- Nome: {profile['nome']}")
+        if profile.get("email"):
+            lines.append(f"- Email: {profile['email']}")
+        if profile.get("telefone"):
+            lines.append(f"- Telefone: {profile['telefone']}")
+
+    lines.append(
+        "INSTRUCTION: If the selected slot is available and the required booking fields are already present in the chat history, call agendar_horario immediately. "
+        "Do not ask the user to confirm again and do not answer only in text."
+    )
+
+    return "\n".join(lines)
+
+
 def should_retry_booking_tool_call(messages: Sequence[BaseMessage], ai_response: AIMessage) -> bool:
     if getattr(ai_response, "tool_calls", None):
         return False
@@ -300,8 +365,10 @@ def should_retry_booking_tool_call(messages: Sequence[BaseMessage], ai_response:
     if recent_booking_tool_succeeded(messages):
         return False
 
-    return has_pending_booking_confirmation(messages) or response_claims_booking_success(
-        str(getattr(ai_response, "content", "") or "")
+    return (
+        has_pending_booking_confirmation(messages)
+        or user_selected_booking_slot(messages)
+        or response_claims_booking_success(str(getattr(ai_response, "content", "") or ""))
     )
 
 

@@ -3,10 +3,13 @@ import unittest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from util.ai_helpers import (
+    build_booking_retry_context_block,
     should_block_unverified_availability_response,
     should_retry_availability_tool_call,
     should_block_unverified_booking_response,
     should_retry_booking_tool_call,
+    user_is_asking_for_availability,
+    user_selected_booking_slot,
 )
 
 
@@ -70,6 +73,43 @@ class BookingGuardTest(unittest.TestCase):
         ]
         response = AIMessage(content="Sim, o horario das 14h as 15h esta ocupado.")
 
+        self.assertFalse(should_retry_availability_tool_call(messages, response))
+        self.assertFalse(should_block_unverified_availability_response(messages, response))
+
+    def test_booking_retry_context_includes_selected_slot_and_last_availability_result(self):
+        messages = [
+            AIMessage(content="Qual horario seria melhor para voce? 10h, 14h ou 16h?"),
+            HumanMessage(content="ok pode ser pras 10"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "call-3", "name": "consultar_agenda", "args": {}}
+                ],
+            ),
+            ToolMessage(
+                content="A agenda de amanha esta livre entre 10h e 11h.",
+                tool_call_id="call-3",
+                name="consultar_agenda",
+            ),
+        ]
+
+        block = build_booking_retry_context_block(messages, {"nome": "Maria", "email": "maria@email.com"})
+
+        self.assertIn("ok pode ser pras 10", block)
+        self.assertIn("A agenda de amanha esta livre entre 10h e 11h.", block)
+        self.assertIn("Maria", block)
+        self.assertIn("maria@email.com", block)
+
+    def test_slot_selection_is_booking_intent_not_availability(self):
+        messages = [
+            AIMessage(content="Qual horario seria melhor para voce? 10h, 14h ou 16h?"),
+            HumanMessage(content="ok pode ser pras 10"),
+        ]
+        response = AIMessage(content="Perfeito, vou verificar o horario das 10h.")
+
+        self.assertTrue(user_selected_booking_slot(messages))
+        self.assertFalse(user_is_asking_for_availability(messages))
+        self.assertTrue(should_retry_booking_tool_call(messages, response))
         self.assertFalse(should_retry_availability_tool_call(messages, response))
         self.assertFalse(should_block_unverified_availability_response(messages, response))
 

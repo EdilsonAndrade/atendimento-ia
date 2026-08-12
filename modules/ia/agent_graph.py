@@ -14,7 +14,6 @@ from modules.agendamento.agenda_tool import consultar_horarios_disponiveis
 from modules.agendamento.delete_agenda_tool import cancelar_agendamento
 from modules.agendamento.consulta_agenda_tool import consulta_agendamento
 from infrastructure.connection import DB_URI
-from datetime import datetime, timedelta
 from prompts.load_prompt import carregar_operacional_prompt
 from modules.agendamento.tools.google_calendario.agenda_tool import build_agendar_tool
 from modules.agendamento.tools.google_calendario.consulta_agenda_tool import build_consulta_tool
@@ -26,11 +25,13 @@ from langchain_core.messages import trim_messages
 from util.ai_helpers import (
     extract_customer_profile,
     build_customer_context_block,
+    build_booking_retry_context_block,
     should_block_unverified_availability_response,
     should_retry_availability_tool_call,
     should_retry_booking_tool_call,
     should_block_unverified_booking_response,
 )
+from util.time_helpers import get_tabela_dias
 # ============================================================================
 # ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
 # ============================================================================
@@ -315,7 +316,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
         mensagens_chat,
         strategy="last",
         token_counter=len,          # Trata cada mensagem como 1 unidade (corta por quantidade)
-        max_tokens=14,               # Mantém janela maior para reduzir perda de contexto imediato
+        max_tokens=50,               # Mantém janela maior para reduzir perda de contexto imediato
         start_on="human",            # Garante que o histórico corte sempre até achar uma mensagem do usuário
         end_on=("human", "tool"),    # Impede encerramento inválido em AIMessage sem resposta
         include_system=False         # O SystemMessage é montado separadamente na linha abaixo
@@ -357,6 +358,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
                 "you MUST call the correct booking tool now. If any required field is missing, ask only for the missing field. "
                 "Never claim that the booking is confirmed unless a tool has just succeeded."
             )),
+            SystemMessage(content=build_booking_retry_context_block(state["messages"], profile)),
         ] + historico_limitado
         resposta_ia = llm_dynamic.invoke(retry_messages)
 
@@ -529,34 +531,6 @@ def get_compiled_graph():
     
     # Compila e retorna o grafo com memória persistente
     return builder.compile(checkpointer=checkpointer)
-
-def get_tabela_dias(quantidade_dias: int):
-    now = datetime.now()
-    data_hoje_iso = now.strftime("%Y-%m-%d")
-    data_formatada_br = now.strftime("%d/%m/%Y")
-    hora_atual_str = now.strftime("%H:%M")
-
-    # Mapeamento dos dias da semana em português
-    dias_semana_pt = {
-        0: "segunda-feira",
-        1: "terça-feira",
-        2: "quarta-feira",
-        3: "quinta-feira",
-        4: "sexta-feira",
-        5: "sábado",
-        6: "domingo"
-    }
-
-    # Monta uma tabela dos próximos 7 dias calculados matematicamente pelo Python
-    tabela_dias = []
-    for i in range(quantidade_dias):
-        dia_calc = now + timedelta(days=i)
-        nome_dia = "hoje" if i == 0 else ("amanhã" if i == 1 else dias_semana_pt[dia_calc.weekday()])
-        data_iso = dia_calc.strftime("%Y-%m-%d")
-        data_br = dia_calc.strftime("%d/%m/%Y")
-        tabela_dias.append(f"• {nome_dia.capitalize()} ({dias_semana_pt[dia_calc.weekday()]}): {data_br} (ISO: '{data_iso}')")
-    
-    return tabela_dias, hora_atual_str, data_hoje_iso
 
 # ============================================================================
 # EXECUÇÃO DO AGENTE (Simulando uma chamada de API Multi-Tenant)
