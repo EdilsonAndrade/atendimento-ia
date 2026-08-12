@@ -21,7 +21,7 @@ from modules.agendamento.tools.google_calendario.consulta_agenda_tool import bui
 from modules.agendamento.tools.google_calendario.delete_agenda_tool import build_delete_tool
 from modules.google_calendar.google_calendar_service import GoogleCalendarService
 from modules.tenant.tenant_service import TenantService
-from util.ai_helpers import sanitize_history_messages  # COMENTÁRIO: Importa a função de higienização de histórico
+from util.ai_helpers import sanitize_for_openai_strict_format  # COMENTÁRIO: Importa a função de higienização de histórico
 # LINHAS DE ALTERAÇÃO - ADICIONAR IMPORT DO TRIM_MESSAGES
 # COMENTÁRIO: Importa a função nativa do LangChain para higienização e corte seguro de histórico.
 from langchain_core.messages import SystemMessage, AIMessage, HumanMessage, ToolMessage, trim_messages
@@ -111,9 +111,9 @@ def get_active_tools(tenant_id: str):
 def routing_agent(state: AgentState, config: RunnableConfig):
     """
     Classifica a intenção combinando Guardrail de estado (respostas a perguntas anteriores)
-    e envio de histórico nativo para o GPT-4o-mini.
+    e envio de histórico nativo para o LLM.
     """
-    print("\n --- [NÓ: routing_agent] GPT-4o-mini analisando a intenção do usuário... ---")
+    print("\n --- [NÓ: routing_agent] LLM analisando a intenção do usuário... ---")
     
     # 1. Filtra as mensagens reais do chat
     historico_limpo = [
@@ -131,7 +131,7 @@ def routing_agent(state: AgentState, config: RunnableConfig):
             print(" -> 🛡️ Guardrail Ativo: Usuário está respondendo a uma pergunta de agendamento. Forçando OPERATIONAL!")
             return {"messages": [AIMessage(content="Routing decision: OPERATIONAL")]}
 
-    # 2. Se não caiu no guardrail, aciona o GPT-4o-mini passando as mensagens nativas
+    # 2. Se não caiu no guardrail, aciona o LLM passando as mensagens nativas
     system_prompt = SystemMessage(content=(
         "You are an orchestrator router for a business booking application.\n"
         "Classify the intent of the user's latest response based on the conversation context.\n\n"
@@ -299,7 +299,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
         end_on=("human", "tool"),    # Impede encerramento inválido em AIMessage sem resposta
         include_system=False         # O SystemMessage é montado separadamente na linha abaixo
     )
-    historico_limitado = sanitize_history_messages(historico_bruto)
+    historico_limitado = sanitize_for_openai_strict_format(historico_bruto)
 
     # 2. SEGREDO DO LANGGRAPH: Montamos o SystemMessage + TODO O HISTÓRICO REAL (incluindo ToolMessages)
     # REMOVER: mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + mensagens_chat
