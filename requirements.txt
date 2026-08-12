@@ -46,3 +46,6 @@ pgvector
 google-api-python-client
 google-auth
 google-auth-httplib2
+
+PyJWT 
+slowapi
