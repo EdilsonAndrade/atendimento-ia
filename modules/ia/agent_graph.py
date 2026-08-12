@@ -301,7 +301,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
     # 3. Disponibiliza somente as tools do backend configurado para o tenant.
     all_active_tools = get_active_tools(tenant_id)
     
-    llm_dynamic = llm.bind_tools(all_active_tools)
+    llm_dynamic = llm.bind_tools(all_active_tools,parallel_tool_calls=False)
     
     resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
     
