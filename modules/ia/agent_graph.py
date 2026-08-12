@@ -285,6 +285,11 @@ def operational_node(state: AgentState, config: RunnableConfig):
     llm_dynamic = llm.bind_tools(all_active_tools,parallel_tool_calls=False)
     
     resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
+    # BLINDAGEM: Se a API externa ignorar o parâmetro e mandar várias tool calls de uma vez,
+    # mantemos apenas a primeira, forçando a execução estritamente sequencial.
+    if hasattr(resposta_ia, "tool_calls") and resposta_ia.tool_calls and len(resposta_ia.tool_calls) > 1:
+        print(f" -> 🛡️ [GUARDRAIL] API enviou {len(resposta_ia.tool_calls)} tool calls em paralelo. Limitando a apenas 1 por segurança.")
+        resposta_ia.tool_calls = resposta_ia.tool_calls[:1]
     
     if hasattr(resposta_ia, 'tool_calls') and resposta_ia.tool_calls:
         print(f" -> 🚀 TOOL CALL DISPARADO AUTONOMAMENTE: {resposta_ia.tool_calls}")
