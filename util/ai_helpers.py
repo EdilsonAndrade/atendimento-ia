@@ -1,5 +1,5 @@
 import copy
-from langchain.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 
 # ============================================================================

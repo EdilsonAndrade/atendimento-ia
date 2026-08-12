@@ -22,9 +22,7 @@ from modules.agendamento.tools.google_calendario.delete_agenda_tool import build
 from modules.google_calendar.google_calendar_service import GoogleCalendarService
 from modules.tenant.tenant_service import TenantService
 from util.ai_helpers import sanitize_for_openai_strict_format  # COMENTÁRIO: Importa a função de higienização de histórico
-# LINHAS DE ALTERAÇÃO - ADICIONAR IMPORT DO TRIM_MESSAGES
-# COMENTÁRIO: Importa a função nativa do LangChain para higienização e corte seguro de histórico.
-from langchain_core.messages import SystemMessage, AIMessage, HumanMessage, ToolMessage, trim_messages
+from langchain_core.messages import trim_messages
 # ============================================================================
 # ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
 # ============================================================================
@@ -115,16 +113,17 @@ def routing_agent(state: AgentState, config: RunnableConfig):
     """
     print("\n --- [NÓ: routing_agent] LLM analisando a intenção do usuário... ---")
     
-    # 1. Filtra as mensagens reais do chat
-    historico_limpo = [
-        m for m in state["messages"] 
+    # 1. Separa histórico textual para o guardrail rápido
+    historico_textual = [
+        m for m in state["messages"]
         if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
+        and not isinstance(m, ToolMessage)
     ]
     
     # GUARDRAIL AUTOMÁTICO: Se a IA fez uma pergunta operacional na mensagem anterior
     # (ex: pediu horário, barbeiro, confirmação), a resposta do usuário É OPERACIONAL.
-    if len(historico_limpo) >= 2:
-        ultima_msg_ia = str(historico_limpo[-2].content).lower() if historico_limpo[-2].type == "ai" else ""
+    if len(historico_textual) >= 2:
+        ultima_msg_ia = str(historico_textual[-2].content).lower() if historico_textual[-2].type == "ai" else ""
         gatilhos_operacionais = ["horário", "horario", "barbeiro", "profissional", "serviço", "servico", "agendar", "data", "dia"]
         
         if any(gatilho in ultima_msg_ia for gatilho in gatilhos_operacionais):
@@ -143,15 +142,23 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'."
     ))
     
-    # COMENTÁRIO: Filtra apenas mensagens de usuário e assistente (descartando ToolMessages e decisões de roteamento anteriores)
-    # Isso impede que cortes no histórico deixem mensagens de ferramentas órfãs enviadas para a API.
-    historico_limpo = [
-        m for m in state["messages"] 
+    # 3. Para o roteador, preserva a sequência AI(tool_calls)->ToolMessage e sanitiza.
+    # Isso evita o erro 400 quando há tool_calls no histórico persistido.
+    historico_com_tools = [
+        m for m in state["messages"]
         if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
-        and not isinstance(m, ToolMessage)
     ]
-   # Monta o array limpo sem o risco de enviar ToolMessages sem seu pai AIMessage
-    mensagens_para_ia = [system_prompt] + historico_limpo[-6:]
+    historico_bruto = trim_messages(
+        historico_com_tools,
+        strategy="last",
+        token_counter=len,
+        max_tokens=8,
+        start_on="human",
+        end_on=("human", "tool"),
+        include_system=False,
+    )
+    historico_sanitizado = sanitize_for_openai_strict_format(historico_bruto)
+    mensagens_para_ia = [system_prompt] + historico_sanitizado
     
     resposta = llm.invoke(mensagens_para_ia)
     decisao = resposta.content.strip().upper()
@@ -352,13 +359,21 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
         with open(caminho_guardrail, "r", encoding="utf-8") as f:
             guardrails_text = f.read()
 
-    # 2. Filtra APENAS mensagens de texto do usuário e assistente (descarta ToolMessages e decisões do roteador)
-    historico_limpo = []
-    for msg in state["messages"]:
-        if isinstance(msg, HumanMessage):
-            historico_limpo.append(msg)
-        elif isinstance(msg, AIMessage) and not str(msg.content).startswith("Routing decision:"):
-            historico_limpo.append(msg)
+    # 2. Preserva histórico real (incluindo ToolMessages) e sanitiza sequência.
+    historico_com_tools = [
+        msg for msg in state["messages"]
+        if not (isinstance(msg, AIMessage) and str(msg.content).startswith("Routing decision:"))
+    ]
+    historico_bruto = trim_messages(
+        historico_com_tools,
+        strategy="last",
+        token_counter=len,
+        max_tokens=6,
+        start_on="human",
+        end_on=("human", "tool"),
+        include_system=False,
+    )
+    historico_sanitizado = sanitize_for_openai_strict_format(historico_bruto)
 
     # 3. MONTA O PROMPT CORRETO COMO SystemMessage (E NÃO AIMessage)
     system_prompt = SystemMessage(content=(
@@ -369,8 +384,8 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
         "ALWAYS respond in the exact same language as the user."
     ))
     
-    # Envia o SystemMessage no topo + as últimas 4 mensagens limpas do chat
-    mensagens_para_ia = [system_prompt] + historico_limpo[-4:]
+    # Envia o SystemMessage no topo + histórico sanitizado
+    mensagens_para_ia = [system_prompt] + historico_sanitizado
     
     try:
         resposta_ia = llm.invoke(mensagens_para_ia)
