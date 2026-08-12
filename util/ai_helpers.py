@@ -1,6 +1,7 @@
 import copy
 import re
-from langchain_core.messages import AIMessage, ToolMessage
+from typing import Sequence
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
 
 # ============================================================================
