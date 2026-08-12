@@ -220,11 +220,32 @@ AVAILABILITY_SUCCESS_MARKERS = (
     "horarios ocupados",
     "horários ocupados",
 )
+# Afirmacoes sobre agendamento ja existente tambem sao fatos de calendario:
+# so podem ser ditas apos consulta fresca ao Google, nunca a partir do checkpoint.
+EXISTING_APPOINTMENT_MARKERS = (
+    "ja tem um agendamento",
+    "ja tem agendamento",
+    "voce tem um agendamento",
+    "tem um agendamento",
+    "ja possui um agendamento",
+    "possui um agendamento",
+    "ja existe um agendamento",
+    "existe um agendamento",
+)
 AVAILABILITY_BLOCK_MARKERS = (
     "nenhum horario foi reservado",
     "nenhum horário foi reservado",
     "nao consegui registrar esse agendamento",
     "não consegui registrar esse agendamento",
+)
+# Indicadores de que a consulta ao calendario falhou (nao ha dado fresco confiavel).
+AVAILABILITY_TOOL_ERROR_MARKERS = (
+    "erro:",
+    "ocorreu um erro",
+    "nao foi possivel",
+    "não foi possível",
+    "nao possui um google calendar",
+    "não possui um google calendar",
 )
 
 
@@ -299,7 +320,12 @@ def recent_availability_tool_succeeded(messages: Sequence[BaseMessage]) -> bool:
 
         if isinstance(msg, ToolMessage) and getattr(msg, "name", None) in AVAILABILITY_TOOL_NAMES:
             normalized = normalize_text(str(getattr(msg, "content", "") or ""))
-            return any(marker in normalized for marker in AVAILABILITY_SUCCESS_MARKERS)
+            if not normalized:
+                return False
+            # Sucesso = a consulta ao calendario rodou e NAO retornou erro, independentemente
+            # do texto. O tool do Google retorna "Eventos encontrados..." ou "Nenhum agendamento...",
+            # que sao respostas validas e frescas da fonte de verdade.
+            return not any(marker in normalized for marker in AVAILABILITY_TOOL_ERROR_MARKERS)
 
     return False
 
@@ -393,16 +419,18 @@ def should_retry_availability_tool_call(messages: Sequence[BaseMessage], ai_resp
     if recent_availability_tool_succeeded(messages):
         return False
 
-    if not user_is_asking_for_availability(messages):
-        return False
-
     content = str(getattr(ai_response, "content", "") or "")
+    # Dispara sempre que a IA AFIRMA estado de calendario (ocupado/livre/agendamento existente)
+    # sem uma consulta fresca ter tido sucesso neste turno, independentemente de como o usuario
+    # formulou a mensagem. O Google Calendar e a unica fonte de verdade; historico nao vale.
     return response_claims_availability(content)
 
 
 def response_claims_availability(content: str) -> bool:
     normalized = normalize_text(content)
-    return any(marker in normalized for marker in AVAILABILITY_SUCCESS_MARKERS)
+    return any(marker in normalized for marker in AVAILABILITY_SUCCESS_MARKERS) or any(
+        marker in normalized for marker in EXISTING_APPOINTMENT_MARKERS
+    )
 
 
 def should_block_unverified_availability_response(messages: Sequence[BaseMessage], ai_response: AIMessage) -> bool:
@@ -412,10 +440,9 @@ def should_block_unverified_availability_response(messages: Sequence[BaseMessage
     if recent_availability_tool_succeeded(messages):
         return False
 
-    if not user_is_asking_for_availability(messages):
-        return False
-
     content = str(getattr(ai_response, "content", "") or "")
+    # Bloqueia qualquer afirmacao de estado de calendario que nao venha de uma consulta
+    # fresca ao Google neste turno, mesmo que o usuario tenha pedido para agendar um slot.
     return response_claims_availability(content) or any(
         marker in normalize_text(content) for marker in AVAILABILITY_BLOCK_MARKERS
     )

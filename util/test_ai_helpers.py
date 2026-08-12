@@ -113,6 +113,56 @@ class BookingGuardTest(unittest.TestCase):
         self.assertFalse(should_retry_availability_tool_call(messages, response))
         self.assertFalse(should_block_unverified_availability_response(messages, response))
 
+    def test_block_existing_appointment_claim_pulled_from_history(self):
+        # Usuario pediu para agendar um slot (nao "pergunta de disponibilidade"),
+        # mas a IA afirma um agendamento existente sem consultar o calendario neste turno.
+        messages = [HumanMessage(content="poderia agendar pra amanha as 12 servico de consultoria?")]
+        response = AIMessage(content=(
+            "Infelizmente o horario das 12:00 esta ocupado. "
+            "Voce ja tem um agendamento para as 14:00 nesse mesmo dia."
+        ))
+
+        self.assertTrue(should_retry_availability_tool_call(messages, response))
+        self.assertTrue(should_block_unverified_availability_response(messages, response))
+
+    def test_do_not_block_calendar_summary_after_google_style_tool_result(self):
+        messages = [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "call-9", "name": "consultar_agenda", "args": {}}
+                ],
+            ),
+            ToolMessage(
+                content="Eventos encontrados na agenda:\n- ID: evt-1 | Titulo: Reuniao | Inicio: 2026-08-13T14:00:00-03:00 | Fim: 2026-08-13T15:00:00-03:00",
+                tool_call_id="call-9",
+                name="consultar_agenda",
+            ),
+        ]
+        response = AIMessage(content="O horario das 14h esta ocupado, mas as 10h esta livre.")
+
+        self.assertFalse(should_retry_availability_tool_call(messages, response))
+        self.assertFalse(should_block_unverified_availability_response(messages, response))
+
+    def test_block_when_availability_tool_returned_error(self):
+        messages = [
+            HumanMessage(content="tem horario amanha as 14?"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "call-10", "name": "consultar_agenda", "args": {}}
+                ],
+            ),
+            ToolMessage(
+                content="Erro: O tenant nao possui um Google Calendar ID configurado.",
+                tool_call_id="call-10",
+                name="consultar_agenda",
+            ),
+        ]
+        response = AIMessage(content="O horario das 14h esta livre.")
+
+        self.assertTrue(should_block_unverified_availability_response(messages, response))
+
 
 if __name__ == "__main__":
     unittest.main()
