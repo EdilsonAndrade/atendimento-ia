@@ -23,7 +23,12 @@ from modules.google_calendar.google_calendar_service import GoogleCalendarServic
 from modules.tenant.tenant_service import TenantService
 from util.ai_helpers import sanitize_for_openai_strict_format  # COMENTÁRIO: Importa a função de higienização de histórico
 from langchain_core.messages import trim_messages
-from util.ai_helpers import extract_customer_profile, build_customer_context_block
+from util.ai_helpers import (
+    extract_customer_profile,
+    build_customer_context_block,
+    should_retry_booking_tool_call,
+    should_block_unverified_booking_response,
+)
 # ============================================================================
 # ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
 # ============================================================================
@@ -326,6 +331,20 @@ def operational_node(state: AgentState, config: RunnableConfig):
     
     resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
 
+    if should_retry_booking_tool_call(state["messages"], resposta_ia):
+        print(" -> [BOOKING GUARD] Resposta textual apos confirmacao. Reforcando uso obrigatorio de tool.")
+        retry_messages = [
+            SystemMessage(content=system_prompt_str),
+            SystemMessage(content=(
+                "CRITICAL OVERRIDE: The latest user message is an explicit confirmation in a booking flow. "
+                "Do not ask for confirmation again and do not merely summarize the booking. "
+                "If the chat history already contains service, date, start time, end time, and customer data, "
+                "you MUST call the correct booking tool now. If any required field is missing, ask only for the missing field. "
+                "Never claim that the booking is confirmed unless a tool has just succeeded."
+            )),
+        ] + historico_limitado
+        resposta_ia = llm_dynamic.invoke(retry_messages)
+
     # BLINDAGEM: Se o modelo ignorar a instrução do prompt e ainda assim mandar várias
     # tool calls de uma vez, mantemos apenas a primeira. O ideal é que o PROMPT já
     # oriente o modelo a pedir ao cliente para enviar um agendamento por vez quando
@@ -347,6 +366,13 @@ def operational_node(state: AgentState, config: RunnableConfig):
         print(f" -> 🚀 TOOL CALL DISPARADO AUTONOMAMENTE: {resposta_ia.tool_calls}")
     else:
         print(" -> LLM gerou resposta em texto (nenhuma tool foi chamada).")
+
+    if should_block_unverified_booking_response(state["messages"], resposta_ia):
+        print(" -> [BOOKING GUARD] Bloqueando confirmacao sem persistencia em calendario.")
+        resposta_ia = AIMessage(content=(
+            "Ainda nao consegui registrar esse agendamento no calendario. "
+            "Nenhum horario foi reservado ate agora. Vou precisar validar os dados e tentar novamente antes de confirmar."
+        ))
 
     return {"messages": [resposta_ia]}
 

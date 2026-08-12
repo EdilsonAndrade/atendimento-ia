@@ -1,5 +1,6 @@
 import copy
 import re
+import unicodedata
 from typing import Sequence
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
@@ -129,4 +130,123 @@ def build_customer_context_block(profile: dict) -> str:
         + "\n".join(dados)
         + "\nCRITICAL: Reuse these fields when the user asks to continue booking/rescheduling. "
           "Do not ask again for fields that are already known; at most confirm in one short sentence."
+    )
+
+
+BOOKING_TOOL_NAMES = {"agendar_horario", "confirmar_agendamento"}
+BOOKING_SUCCESS_MARKERS = (
+    "agendamento confirmado com sucesso",
+    "agendamento realizado com sucesso",
+    "agendamento foi confirmado",
+    "agendamento foi agendado",
+    "foi agendado com sucesso",
+    "reserva confirmada",
+    "reserva criada",
+    "horario reservado",
+    "horario agendado",
+    "evento criado",
+    "convite enviado",
+)
+BOOKING_CONFIRMATION_PROMPTS = (
+    "posso confirmar esse agendamento",
+    "posso confirmar o agendamento",
+    "deseja confirmar esse agendamento",
+    "deseja confirmar o agendamento",
+    "quer que eu confirme esse agendamento",
+    "quer que eu confirme o agendamento",
+    "vou confirmar os dados do agendamento",
+)
+AFFIRMATIVE_MARKERS = (
+    "sim",
+    "confirmo",
+    "pode confirmar",
+    "pode agendar",
+    "pode marcar",
+    "ok",
+    "okay",
+    "fechado",
+    "isso",
+    "correto",
+)
+
+
+def normalize_text(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    return text
+
+
+def response_claims_booking_success(content: str) -> bool:
+    normalized = normalize_text(content)
+    return any(marker in normalized for marker in BOOKING_SUCCESS_MARKERS)
+
+
+def response_reasks_booking_confirmation(content: str) -> bool:
+    normalized = normalize_text(content)
+    return any(marker in normalized for marker in BOOKING_CONFIRMATION_PROMPTS)
+
+
+def is_affirmative_text(content: str) -> bool:
+    normalized = normalize_text(content)
+    if not normalized:
+        return False
+    return normalized in AFFIRMATIVE_MARKERS or any(
+        normalized.startswith(marker) for marker in AFFIRMATIVE_MARKERS
+    )
+
+
+def has_pending_booking_confirmation(messages: Sequence[BaseMessage]) -> bool:
+    last_human = None
+    previous_ai = None
+
+    for msg in reversed(messages):
+        if last_human is None and getattr(msg, "type", None) == "human":
+            last_human = str(getattr(msg, "content", "") or "")
+            continue
+
+        if last_human is not None and isinstance(msg, AIMessage):
+            previous_ai = str(getattr(msg, "content", "") or "")
+            break
+
+    if not last_human or not previous_ai:
+        return False
+
+    return is_affirmative_text(last_human) and response_reasks_booking_confirmation(previous_ai)
+
+
+def recent_booking_tool_succeeded(messages: Sequence[BaseMessage]) -> bool:
+    for msg in reversed(messages):
+        if getattr(msg, "type", None) == "human":
+            break
+
+        if isinstance(msg, ToolMessage) and getattr(msg, "name", None) in BOOKING_TOOL_NAMES:
+            return response_claims_booking_success(str(getattr(msg, "content", "") or ""))
+
+    return False
+
+
+def should_retry_booking_tool_call(messages: Sequence[BaseMessage], ai_response: AIMessage) -> bool:
+    if getattr(ai_response, "tool_calls", None):
+        return False
+
+    if recent_booking_tool_succeeded(messages):
+        return False
+
+    return has_pending_booking_confirmation(messages) or response_claims_booking_success(
+        str(getattr(ai_response, "content", "") or "")
+    )
+
+
+def should_block_unverified_booking_response(messages: Sequence[BaseMessage], ai_response: AIMessage) -> bool:
+    if getattr(ai_response, "tool_calls", None):
+        return False
+
+    if recent_booking_tool_succeeded(messages):
+        return False
+
+    content = str(getattr(ai_response, "content", "") or "")
+    return response_claims_booking_success(content) or (
+        has_pending_booking_confirmation(messages)
+        and response_reasks_booking_confirmation(content)
     )
