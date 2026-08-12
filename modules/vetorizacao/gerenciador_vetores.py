@@ -4,6 +4,8 @@ from langchain_postgres import PGVector
 from langchain_core.documents import Document
 from infrastructure.connection import DB_URI
 
+print("🚀 [GLOBAL] Carregando modelo HuggingFace na memória...")
+_GLOBAL_EMBEDDINGS = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
 
 class GerenciadorVetores:
     def __init__(self, collection_name: str = "interasis_knowledge"):
@@ -21,10 +23,9 @@ class GerenciadorVetores:
             
         self.collection_name = collection_name
         print("Inicializando modelo de Embeddings local HuggingFace...")
-        self.embeddings = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
         # COMENTÁRIO: Conecta ao PostgreSQL através do PGVector
         self.banco = PGVector(
-            embeddings=self.embeddings,
+            embeddings=_GLOBAL_EMBEDDINGS,
             collection_name=self.collection_name,
             connection=self.db_url,
             use_jsonb=True,

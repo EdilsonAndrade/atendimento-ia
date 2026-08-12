@@ -33,6 +33,10 @@ print(f"Acessando o banco {DB_URI}")
 # Instâncias globais dos serviços de infraestrutura
 tenant_service = TenantService()
 calendar_service = GoogleCalendarService(service_account_path="credentials.json")
+
+print("🚀 [GLOBAL] Inicializando Gerenciador de Vetores e Modelo HuggingFace...")
+# O modelo sobe para a RAM APENAS UMA VEZ ao ligar o container!
+vector_manager_global = GerenciadorVetores()
 # ============================================================================
 # PASSO 1: ESTRUTURA DO ESTADO (O "Quadro Negro" Compartilhado)
 # ============================================================================
@@ -193,18 +197,6 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
     
-    try:
-        # ============================================================================
-        # ALTERAÇÃO NA CONSULTA VETORIAL: Substitui pasta local por busca no PostgreSQL
-        # ============================================================================
-        # REMOVIDO: manager = VectorManager(db_directory=f"db/{tenant_id}/knowledge_db")
-        
-        # COMENTÁRIO: Instancia o gerenciador de vetores do PostgreSQL
-        manager = GerenciadorVetores()
-    except Exception as e:
-        print(f"Erro ao carregar banco: {e}")
-        return {"messages": [AIMessage(content="Não foram encontrados dados do cliente para formular a resposta.")]}
-        
     # 1. Pegamos a pergunta original do usuário (última mensagem Human)
     pergunta_usuario = ""
     for msg in reversed(state["messages"]):
@@ -215,7 +207,7 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     print(f" -> Buscando no DB por: '{pergunta_usuario}'")
     
     # 2. Busca RAG via MMR
-    contexto_encontrado = manager.search_context(pergunta_usuario,tenant_id, 5)
+    contexto_encontrado = vector_manager_global.search_context(pergunta_usuario,tenant_id, 5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
     # 3. Formata o histórico recente de conversas para o LLM lembrar do passado
@@ -257,18 +249,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
     
-    try:
-        # ============================================================================
-        # ALTERAÇÃO NA CONSULTA VETORIAL: Substitui pasta local por busca no PostgreSQL
-        # ============================================================================
-        # REMOVIDO: manager = VectorManager(db_directory=f"db/{tenant_id}/knowledge_db")
-        
-        # COMENTÁRIO: Instancia o gerenciador de vetores do PostgreSQL
-        manager = GerenciadorVetores()
-    except Exception as e:
-        print(f"Erro ao carregar banco: {e}")
-        return {"messages": [AIMessage(content="Não foram encontrados dados do cliente.")]}
-    
+   
     # Busca a última pergunta do usuário apenas para o RAG
     pergunta_usuario = ""
     for msg in reversed(state["messages"]):
@@ -276,7 +257,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
             pergunta_usuario = msg.content
             break
 
-    contexto_encontrado = manager.search_context(pergunta_usuario, tenant_id, 5)
+    contexto_encontrado = vector_manager_global.search_context(pergunta_usuario, tenant_id, 5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
 
