@@ -21,6 +21,9 @@ from modules.agendamento.tools.google_calendario.consulta_agenda_tool import bui
 from modules.agendamento.tools.google_calendario.delete_agenda_tool import build_delete_tool
 from modules.google_calendar.google_calendar_service import GoogleCalendarService
 from modules.tenant.tenant_service import TenantService
+# LINHAS DE ALTERAÇÃO - ADICIONAR IMPORT DO TRIM_MESSAGES
+# COMENTÁRIO: Importa a função nativa do LangChain para higienização e corte seguro de histórico.
+from langchain_core.messages import SystemMessage, AIMessage, HumanMessage, ToolMessage, trim_messages
 # ============================================================================
 # ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
 # ============================================================================
@@ -62,8 +65,13 @@ llm = ChatOpenAI(
     model=llm_model, 
     api_key=api_key,
     base_url="https://api.deepseek.com/v1", # Garanta que a base URL aponta para a API do DeepSeek
-    temperature=0
-    )
+    temperature=0, 
+    extra_body={
+        "thinking":{
+            "type": "disabled"
+        }
+    }
+)
 
 static_tools = [
     consultar_horarios_disponiveis, 
@@ -237,6 +245,21 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     return {"messages": [AIMessage(content=resposta_ia.content)]}
 
 
+def remove_orphaned_tool_messages(messages: list) -> list:
+    # COMENTÁRIO: Mapeia todos os IDs de chamadas de ferramentas das AIMessages que ainda estão vivas no histórico
+    ids_validos = {
+        tc["id"]
+        for m in messages
+        if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
+        for tc in m.tool_calls
+    }
+    
+    # COMENTÁRIO: Mantém no histórico apenas mensagens comuns ou ToolMessages que possuem um pai válido
+    return [
+        m for m in messages
+        if not (isinstance(m, ToolMessage) and m.tool_call_id not in ids_validos)
+    ]
+    
 # ============================================================================
 # PASSO 5: NÓ OPERACIONAL (Corrigido sem Loop Infinito)
 # ============================================================================
@@ -244,7 +267,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
     """
     Nó Operacional que preserva as ToolMessages no estado para evitar Loops Infinitos.
     """
-    print("\n --- [NÓ: operational_node] GPT-4o-mini avaliando fluxo de atendimento... ---")
+    print("\n --- [NÓ: operational_node] Modelo avaliando fluxo de atendimento... ---")
     
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
@@ -275,22 +298,50 @@ def operational_node(state: AgentState, config: RunnableConfig):
         m for m in state["messages"] 
         if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
     ]
+   # LINHAS DE ALTERAÇÃO - SUBSTITUIR A TRUNCAGEM MANUAL PELO TRIM_MESSAGES
+    # COMENTÁRIO: Substitui o slice manual e o 'if' de shift pelo trim_messages nativo.
+    # O 'token_counter=len' conta mensagens (não tokens), e o 'start_on="human"' garante
+    # que o histórico nunca comece com ToolMessage órfã, recuando quantas posições forem necessárias.
+    historico_bruto = trim_messages(
+        mensagens_chat,
+        strategy="last",
+        token_counter=len,          # Trata cada mensagem como 1 unidade (corta por quantidade)
+        max_tokens=10,               # Mantém no máximo as últimas 10 mensagens
+        start_on="human",            # Garante que o histórico corte sempre até achar uma mensagem do usuário
+        end_on=("human", "tool"),    # Impede encerramento inválido em AIMessage sem resposta
+        include_system=False         # O SystemMessage é montado separadamente na linha abaixo
+    )
+    
+    historico_limitado = remove_orphaned_tool_messages(historico_bruto)
 
     # 2. SEGREDO DO LANGGRAPH: Montamos o SystemMessage + TODO O HISTÓRICO REAL (incluindo ToolMessages)
-    mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + mensagens_chat
+    # REMOVER: mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + mensagens_chat
+    mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + historico_limitado
     
     # 3. Disponibiliza somente as tools do backend configurado para o tenant.
     all_active_tools = get_active_tools(tenant_id)
     
-    llm_dynamic = llm.bind_tools(all_active_tools,parallel_tool_calls=False)
+    llm_dynamic = llm.bind_tools(all_active_tools, parallel_tool_calls=False)
     
     resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
-    # BLINDAGEM: Se a API externa ignorar o parâmetro e mandar várias tool calls de uma vez,
-    # mantemos apenas a primeira, forçando a execução estritamente sequencial.
+
+    # BLINDAGEM: Se o modelo ignorar a instrução do prompt e ainda assim mandar várias
+    # tool calls de uma vez, mantemos apenas a primeira. O ideal é que o PROMPT já
+    # oriente o modelo a pedir ao cliente para enviar um agendamento por vez quando
+    # detectar múltiplos pedidos na mesma mensagem — isso aqui é só a última linha
+    # de defesa, não a solução principal.
     if hasattr(resposta_ia, "tool_calls") and resposta_ia.tool_calls and len(resposta_ia.tool_calls) > 1:
-        print(f" -> 🛡️ [GUARDRAIL] API enviou {len(resposta_ia.tool_calls)} tool calls em paralelo. Limitando a apenas 1 por segurança.")
+        total_recebido = len(resposta_ia.tool_calls)
+        descartadas = resposta_ia.tool_calls[1:]
+        print(f" -> 🛡️ [GUARDRAIL] Modelo tentou {total_recebido} tool calls em paralelo apesar "
+              f"da instrução do prompt. Mantendo: {resposta_ia.tool_calls[0]['name']}. "
+              f"Descartadas: {[tc['name'] for tc in descartadas]}")
+
         resposta_ia.tool_calls = resposta_ia.tool_calls[:1]
-    
+
+        if "tool_calls" in resposta_ia.additional_kwargs:
+            resposta_ia.additional_kwargs["tool_calls"] = resposta_ia.additional_kwargs["tool_calls"][:1]
+
     if hasattr(resposta_ia, 'tool_calls') and resposta_ia.tool_calls:
         print(f" -> 🚀 TOOL CALL DISPARADO AUTONOMAMENTE: {resposta_ia.tool_calls}")
     else:
