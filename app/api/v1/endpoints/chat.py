@@ -1,19 +1,38 @@
 # app/api/v1/endpoints/chat.py
-import logging
 import asyncio
+import logging
 import os
-from fastapi import APIRouter, Header, status, HTTPException
+import jwt
+from fastapi import APIRouter, Request, status, HTTPException, Header, Depends
 from langchain_core.messages import HumanMessage
 from app.schemas.chat import MessageRequest, ChatResponse
 from modules.ia.agent_graph import get_compiled_graph
-
 logger = logging.getLogger(__name__)
 router = APIRouter()
+from modules.token.token_verify import verificar_token
+from datetime import datetime, timedelta, timezone
+
+from app.core.limiter import limiter
+SECRET_KEY = os.getenv("SECRET_KEY", "mudar_senha_123")
+ALGORITHM = os.getenv("ALGORITHM", "HS256")
+
 
 MESSAGE_PROCESSING_GAP_SECONDS = float(os.getenv("CHAT_MESSAGE_GAP_SECONDS", "5.0"))
 _chat_locks: dict[str, asyncio.Lock] = {}
 _chat_last_finished_at: dict[str, float] = {}
 
+
+
+
+
+# Instanciamos o grafo compilado com o PostgresSaver UMA ÚNICA VEZ (Singleton)
+# Isso mantém a conexão/checkpointer ativos para recuperar o histórico entre requisições
+try:
+    graph_app = get_compiled_graph()
+except Exception as e:
+    print(f"⚠️ Alerta: Erro ao inicializar o grafo com PostgresSaver: {e}")
+    graph_app = None
+    
 
 def _invoke_graph(graph_app, estado_inicial, configuracao_requisicao):
     if graph_app is None:
@@ -25,17 +44,13 @@ def _invoke_graph(graph_app, estado_inicial, configuracao_requisicao):
 
     return invoke_fn(estado_inicial, configuracao_requisicao)
 
-
-# Instanciamos o grafo compilado com o PostgresSaver UMA ÚNICA VEZ (Singleton)
-# Isso mantém a conexão/checkpointer ativos para recuperar o histórico entre requisições
-try:
-    graph_app = get_compiled_graph()
-except Exception as e:
-    print(f"⚠️ Alerta: Erro ao inicializar o grafo com PostgresSaver: {e}")
-    graph_app = None
-
 @router.post("/chat", response_model=ChatResponse, status_code=status.HTTP_200_OK, summary="Interagir com o Agente de IA")
-async def chat_interaction(request: MessageRequest, tenant_id: str | None = Header(default=None, alias="X-Tenant-ID")):
+@limiter.limit("10/minute")
+async def chat_interaction(
+    request: Request,
+    payload: MessageRequest,
+    tenant_id: str = Depends(verificar_token),
+):
     """
     Dispara um fluxo de conversa dentro do Grafo de Estados (LangGraph).
     O roteamento de intenção e a conexão com os arquivos vetoriais do cliente
@@ -44,7 +59,7 @@ async def chat_interaction(request: MessageRequest, tenant_id: str | None = Head
     quando a origem é uma plataforma como o site.
     A memória é persistida no PostgreSQL por meio do PostgresSaver.
     """
-    tenant_id = tenant_id or request.tenant_id
+    tenant_id = tenant_id or payload.tenant_id
 
     if not tenant_id or not str(tenant_id).strip():
         raise HTTPException(
@@ -53,14 +68,14 @@ async def chat_interaction(request: MessageRequest, tenant_id: str | None = Head
         )
 
     estado_inicial = {
-        "messages": [HumanMessage(content=request.message)],
+        "messages": [HumanMessage(content=payload.message)],
         "current_date": "",
         "selected_slot": "",
         "alternatives_suggested": []
     }
     
     # Enviamos o tenant_id (para o RAG) e o thread_id (para o PostgresSaver)
-    thread_id_sessao = request.thread_id or f"tenant_{tenant_id}_default"
+    thread_id_sessao = payload.thread_id or f"tenant_{tenant_id}_default"
     conversation_key = f"{tenant_id}:{thread_id_sessao}"
     conversation_lock = _chat_locks.setdefault(conversation_key, asyncio.Lock())
     
@@ -101,7 +116,7 @@ async def chat_interaction(request: MessageRequest, tenant_id: str | None = Head
         )
     except TimeoutError:
         logger.error(
-            f"❌ [TIMEOUT] O processamento da mensagem estourou o tempo limite para a thread {request.thread_id}"
+            f"❌ [TIMEOUT] O processamento da mensagem estourou o tempo limite para a thread {payload.thread_id}"
         )
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -110,7 +125,7 @@ async def chat_interaction(request: MessageRequest, tenant_id: str | None = Head
     except Exception as ex:
         # Log detalhado do erro no servidor para monitoramento interno
         logger.error(
-            f"❌ [AGENT ERROR] Falha inesperada no processamento da thread {request.thread_id}: {str(ex)}",
+            f"❌ [AGENT ERROR] Falha inesperada no processamento da thread {payload.thread_id}: {str(ex)}",
             exc_info=True,
         )
 
@@ -119,3 +134,29 @@ async def chat_interaction(request: MessageRequest, tenant_id: str | None = Head
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Ocorreu um erro interno ao processar sua solicitação no Atendimento de IA. Nossa equipe já foi notificada.",
         )
+
+   
+        
+@router.get("/chat/init")
+def inicializar_widget(request: Request, tenant_id: str | None = Header(default=None, alias="X-Tenant-ID")):
+    """
+    O frontend chama esta rota passando o tenant_id aberto na URL UMA ÚNICA VEZ.
+    O backend devolve um token assinado e temporário.
+    """
+    # Define que o token vai expirar em exatos 30 minutos a partir de agora
+    tempo_expiracao = datetime.now(timezone.utc) + timedelta(minutes=30)
+    
+    # O "payload" é o pacote de dados que vai viajar dentro do token escondido
+    payload = {
+        "tenant_id": tenant_id, # Guarda de qual empresa é este chat
+        "exp": tempo_expiracao  # Regra obrigatória do JWT para data de vencimento
+    }
+    
+    # Gera o token em formato de texto gigante e criptografado
+    token_assinado = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    
+    # Devolve para o frontend salvar na memória (ex: sessionStorage)
+    return {
+        "access_token": token_assinado,
+        "token_type": "bearer"
+    }

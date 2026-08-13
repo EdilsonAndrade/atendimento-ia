@@ -2,8 +2,9 @@
 # main.py
 import uvicorn
 import os
+# jwt: A biblioteca PyJWT que vai criar (encode) e ler (decode) os nossos tokens criptografados.
+import jwt
 from fastapi import Depends, FastAPI
-from app.api.v1.webhooks import whatsapp
 from app.core.config import settings
 from app.api.v1.router import api_router
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
@@ -14,33 +15,17 @@ from app.api.v1.webhooks.whatsapp import router as whatsapp_router
 from app.api.v1.endpoints.evolution_whatsapp_instances import router as evolution_instances_router
 from app.api.v1.endpoints.tenant import router as tenant_router
 from app.api.v1.endpoints.prompt_manager import router as prompt_manager_router
-
-from fastapi import FastAPI, Depends, HTTPException, Request, Security
-
-# HTTPBearer e HTTPAuthorizationCredentials: Fazem o FastAPI entender e exigir 
-# o envio de um token no formato "Bearer <token>" no header de Autorização.
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
-# Limiter: A classe principal que controla quantas requisições podem ser feitas.
-# _rate_limit_exceeded_handler: A função que devolve a mensagem de erro bonita quando o limite estoura.
-from slowapi import Limiter, _rate_limit_exceeded_handler
-
+from fastapi import FastAPI, Depends
+from slowapi import _rate_limit_exceeded_handler
 # get_remote_address: Função que pega o IP real do usuário (ignorando proxies se configurado certo).
 from slowapi.util import get_remote_address
-
 # RateLimitExceeded: O erro disparado quando o usuário passa do limite.
 from slowapi.errors import RateLimitExceeded
-
-# jwt: A biblioteca PyJWT que vai criar (encode) e ler (decode) os nossos tokens criptografados.
-import jwt
-
-
-from datetime import datetime, timedelta, timezone
+from modules.token.token_verify import verificar_token
+from app.core.limiter import limiter
 # COMENTÁRIO: Carrega as variáveis declaradas no arquivo .env
 load_dotenv()
 
-limiter = Limiter(key_func=get_remote_address)
-security = HTTPBearer()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -58,31 +43,8 @@ app = FastAPI(
 app.state.limiter = limiter
 
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-SECRET_KEY = os.getenv("SECRET_KEY", "mudar_senha_123")
-ALGORITHM = os.getenv("ALGORITHM", "HS256")
 
-# ==============================================================================
-# FUNÇÃO DE VALIDAÇÃO DO TOKEN (RODA ANTES DO CHAT)
-# ==============================================================================
-def verificar_token(credentials: HTTPAuthorizationCredentials = Security(security)):
-    """
-    Função que pega o token enviado pelo frontend, descriptografa e vê se é válido.
-    Se for falso, alterado ou vencido, ele derruba a requisição na hora.
-    """
-    token = credentials.credentials
-    try:
-        # Tenta abrir o token usando a sua senha secreta
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        
-        # Se deu certo, extrai o tenant_id de dentro do token e devolve para a rota
-        return payload.get("tenant_id")
-        
-    except jwt.ExpiredSignatureError:
-        # Cai aqui se o token passou do tempo de validade (ex: 30 minutos)
-        raise HTTPException(status_code=401, detail="Sessão expirada. Recarregue o site.")
-    except jwt.InvalidTokenError:
-        # Cai aqui se um hacker tentar enviar um token inventado
-        raise HTTPException(status_code=401, detail="Token de segurança inválido.")
+
     
 # COMENTÁRIO: Rota protegida do Swagger UI
 @app.get("/docs", include_in_schema=False)
