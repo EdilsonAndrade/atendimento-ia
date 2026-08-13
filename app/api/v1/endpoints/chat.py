@@ -68,17 +68,14 @@ async def chat_interaction(
         )
 
     estado_inicial = {
-        "messages": [HumanMessage(content=payload.message)],
-        "current_date": "",
-        "selected_slot": "",
-        "alternatives_suggested": []
+        "messages": [HumanMessage(content=payload.message)]
     }
     
     # Enviamos o tenant_id (para o RAG) e o thread_id (para o PostgresSaver)
     thread_id_sessao = payload.thread_id or f"tenant_{tenant_id}_default"
     conversation_key = f"{tenant_id}:{thread_id_sessao}"
     conversation_lock = _chat_locks.setdefault(conversation_key, asyncio.Lock())
-    
+    print(f"🔹 [CHAT] Iniciando processamento da thread {thread_id_sessao} para o tenant {tenant_id}")
     configuracao_requisicao = {
         "configurable": {
             "tenant_id": tenant_id,
@@ -107,6 +104,9 @@ async def chat_interaction(
                 )
 
             resposta_final = result["messages"][-1].content
+            # Se for o sinal de standby, limpa a resposta para o frontend não exibir nada
+            if resposta_final == "[ATENDIMENTO_HUMANO_ATIVO]":
+                resposta_final = ""
             _chat_last_finished_at[conversation_key] = asyncio.get_running_loop().time()
 
         return ChatResponse(

@@ -1,13 +1,14 @@
 # modules/ia/agent_graph.py
 import psycopg
 import os
+import time
 from typing import TypedDict, Annotated, Sequence
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig  # IMPORTANTE: Para receber as configs dinâmicas do FastAPI
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END, START
 from langgraph.checkpoint.postgres import PostgresSaver
 from modules.agendamento.booking_tools import confirmar_agendamento
 from modules.agendamento.agenda_tool import consultar_horarios_disponiveis
@@ -32,6 +33,7 @@ from util.ai_helpers import (
     should_block_unverified_booking_response,
 )
 from util.time_helpers import get_tabela_dias
+from util.ai_human_transbordo import node_iniciar_transbordo, node_humano_standby, node_reativar_ia, remover_acentos
 # ============================================================================
 # ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
 # ============================================================================
@@ -62,7 +64,17 @@ class AgentState(TypedDict):
     selected_slot: str         # Guarda o horário escolhido (ex: "10:00")
     alternatives_suggested: list  # Lista de horários alternativos que oferecemos a ele
     
-
+    # ============================================================================
+    # NOVOS CAMPOS PARA O TRANSBORDO HUMANO (HANDOVER)
+    # ============================================================================
+    
+    # is_human_active: Indica se o chat está pausado para o humano (True) ou ativo para a IA (False).
+    # Se for True, a IA entra em standby e não executa chamadas de LLM.
+    is_human_active: bool
+    
+    # last_message_at: Guarda a data/hora da última mensagem no formato ISO (ex: "2026-08-13T14:30:00Z").
+    # Serve para calcularmos a diferença de tempo e aplicar a regra dos 10 minutos de inatividade.
+    last_message_at: float
 
 # ============================================================================
 # PASSO 2: CRIAÇÃO DO PRIMEIRO NÓ (O Agente Roteador)
@@ -112,6 +124,54 @@ def get_active_tools(tenant_id: str):
     )
     return active_tools
     
+def roteador_handover(state: AgentState) -> str:
+    is_human = state.get("is_human_active", False)
+    last_ts = state.get("last_message_at", 0)
+    messages = state.get("messages", [])
+
+    print(f"\n🔍 [DEBUG ROTEADOR] Lido do Postgres -> is_human_active = {is_human}")
+    
+    if not messages:
+        return "routing_agent"
+
+    ultima_msg_human = ""
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage) or getattr(msg, "type", "") == "human":
+            ultima_msg_human = msg.content
+            break
+        
+    msg_normalizada = remover_acentos(ultima_msg_human)
+    print(f"💬 [DEBUG ROTEADOR] Texto extraído do Usuário: '{ultima_msg_human}' | Normalizado: '{msg_normalizada}'")
+
+    # 2. SE O CHAT JÁ ESTÁ EM MODO HUMANO
+    if is_human:
+        # A) Timeout de 10 min (600 segundos)
+        if last_ts and (time.time() - float(last_ts)) >= 600:
+            print("⏰ [DEBUG ROTEADOR] Timeout de 10 min atingido! Reativando a IA.")
+            return "node_reativar_ia"
+        
+        # B) Gatilhos de retorno para a IA
+        gatilhos_retorno = ["voltar", "falar com ia", "falar com robo", "reativar ia", "#voltar"]
+        if any(g in msg_normalizada for g in gatilhos_retorno):
+            print("🔄 [DEBUG ROTEADOR] Cliente pediu retorno para a IA.")
+            return "node_reativar_ia"
+
+        print("⏸️ [DEBUG ROTEADOR] MODO HUMANO ATIVO -> Redirecionando para node_humano_standby")
+        return "node_humano_standby"
+
+    palavras_chave_transbordo = [
+        "humano", "atendente", "suporte", "pessoa", "alguem", 
+        "operador", "atendimento humano", "falar com gente", "falar com alguem"
+    ]
+    
+    # SE O MODO HUMANO NÃO ESTÁ ATIVO -> Checa se o usuário pediu transbordo
+    if any(palavra in msg_normalizada for palavra in palavras_chave_transbordo):
+        print("👤 [DEBUG ROTEADOR] Pedido de transbordo detectado! Indo para node_iniciar_transbordo")
+        return "node_iniciar_transbordo"
+
+    # Fluxo normal da IA
+    return "routing_agent"
+
 # ============================================================================
 # PASSO 3: NÓ ROTEADOR COM GUARDRAIL DE CONTEXTO DUAL (routing_agent)
 # ============================================================================
@@ -481,13 +541,30 @@ def dynamic_tool_node(state: AgentState, config: RunnableConfig):
 
 builder = StateGraph(AgentState)
 
+builder.add_node("node_iniciar_transbordo", node_iniciar_transbordo)
+builder.add_node("node_humano_standby", node_humano_standby)
+builder.add_node("node_reativar_ia", node_reativar_ia) 
+
 builder.add_node("routing_agent", routing_agent)
 builder.add_node("institutional_node", institutional_node)
 builder.add_node("operational_node", operational_node)
 builder.add_node("chitchat_node", chitchat_node)
 builder.add_node("tools", dynamic_tool_node)
 
-builder.set_entry_point("routing_agent")
+builder.add_conditional_edges(
+    START,
+    roteador_handover,
+    {
+        "routing_agent": "routing_agent",  # Se for mensagem de IA, vai pro seu routing_agent
+        "node_iniciar_transbordo": "node_iniciar_transbordo",
+        "node_humano_standby": "node_humano_standby",
+        "node_reativar_ia": "node_reativar_ia"
+    }
+)
+
+builder.add_edge("node_iniciar_transbordo", END)
+builder.add_edge("node_humano_standby", END)
+builder.add_edge("node_reativar_ia", END)
 
 builder.add_conditional_edges(
     "routing_agent",
@@ -498,6 +575,7 @@ builder.add_conditional_edges(
         "chitchat_route": "chitchat_node"
     }
 )
+
 
 builder.add_conditional_edges(
     "operational_node",
