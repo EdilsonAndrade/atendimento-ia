@@ -75,8 +75,13 @@ services:
       - "host.docker.internal:host-gateway"
     env_file:
       - ./atendimento-ia/.env
+    volumes:
+      - ./atendimento-ia/credentials.json:/app/credentials.json
+      - ./atendimento-ia/data:/app/data
+      - ./atendimento-ia/db:/app/db
     networks:
       - proxy_default
+   
 
 networks:
   proxy_default:
