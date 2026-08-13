@@ -55,3 +55,4 @@ jobs:
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker compose pull chatatendimento-api
             docker compose up -d chatatendimento-api
+            docker image prune -f
