@@ -2,23 +2,23 @@ services:
   interasisai-web:
     container_name: interasisai-web
     build:
-      context: ./interasisai-web # Aponta para a subpasta do Next.js
+      context: ../interasisai-web # Aponta para a subpasta do Next.js
       dockerfile: Dockerfile
       args:
         # COMENTÁRIO: O Compose lê os valores injetados pelo comando no terminal
-        - NEXT_PUBLIC_PYTHON_BACKEND_URL
-        - NEXT_PUBLIC_TENANT_ID
+        - NEXT_PUBLIC_PYTHON_BACKEND_URL=${NEXT_PUBLIC_PYTHON_BACKEND_URL:-http://localhost:8001}
+        - NEXT_PUBLIC_TENANT_ID=${NEXT_PUBLIC_TENANT_ID:-marcelo}
     restart: always
     ports:
       - "3001:3001"
     env_file:
-      - ./interasisai-web/.env
+      - ../interasisai-web/.env  
     networks:
       - proxy_default
 
   chatatendimento-api:
     build:
-      context: ./atendimento-ia
+      context: .
       dockerfile: Dockerfile
     container_name: chatatendimento-api
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -28,9 +28,11 @@ services:
       # COMENTÁRIO: Permite que o container acesse serviços rodando no Host via 'host.docker.internal'
       - "host.docker.internal:host-gateway"
     env_file:
-      - ./atendimento-ia/.env
+      - ./.env
     networks:
       - proxy_default
+    volumes:
+      - ./credentials.json:/app/credentials.json:ro
   # COMENTÁRIO: Container Redis dedicado para o sistema de atendimento/Evolution API
   evolution_redis:
     image: redis:7-alpine
