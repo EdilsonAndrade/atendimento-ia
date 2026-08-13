@@ -1,0 +1,6 @@
+.venv
+.git
+db
+data
+.env
+credentials.json
