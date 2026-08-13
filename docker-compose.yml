@@ -1,18 +1,14 @@
 services:
   interasisai-web:
+    image: ghcr.io/edilsonandrade/interasisai-web:latest
     container_name: interasisai-web
-    build:
-      context: ./interasisai-web # Aponta para a subpasta do Next.js
-      dockerfile: Dockerfile
-      args:
-        # COMENTÁRIO: O Compose lê os valores injetados pelo comando no terminal
-        - NEXT_PUBLIC_PYTHON_BACKEND_URL
-        - NEXT_PUBLIC_TENANT_ID
     restart: always
     ports:
       - "3001:3001"
-    env_file:
-      - ./interasisai-web/.env
+    environment:
+      ADM_USER: ${ADM_USER}
+      ADM_PWD: ${ADM_PWD}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET}
     networks:
       - proxy_default
   
