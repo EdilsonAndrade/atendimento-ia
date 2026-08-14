@@ -30,6 +30,7 @@ async def evolution_webhook(request: Request, background_tasks: BackgroundTasks)
     
     # COMENTÁRIO 1: Suporta tanto caixa alta quanto caixa baixa no evento da Evolution v2
     event_type = payload.get("event")
+    
     if event_type not in ["messages.upsert", "MESSAGES_UPSERT"]:
         return {"status": "ignored_event"}
 

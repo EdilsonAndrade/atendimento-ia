@@ -57,8 +57,13 @@ async def manter_digitando_continuo(instance_name: str, sender_phone: str, stop_
     Envia o evento de 'composing' a cada 3.0 segundos até que a flag stop_event seja ativada.
     """
     url = f"{EVOLUTION_API_URL}/chat/sendPresence/{instance_name}"
+    
+    # COMENTÁRIO DUMMY: Remove o sufixo '@s.whatsapp.net' se houver, pois a Evolution API 
+    # exige apenas os dígitos numéricos no campo 'number'.
+    numero_limpo = sender_phone.split("@")[0].strip() if sender_phone else ""
+    
     payload = {
-        "number": sender_phone,
+        "number": numero_limpo,
         "presence": "composing",
         "delay": 3500
     }
@@ -152,12 +157,9 @@ async def processar_mensagem_e_responder(
 
         try:
             logger.info(f"[WhatsApp] Processando mensagem do tenant {tenant_id} para {sender_phone}")
-
+            
             estado_inicial = {
-                "messages": [HumanMessage(content=user_message)],
-                "current_date": "",
-                "selected_slot": "",
-                "alternatives_suggested": []
+                "messages": [HumanMessage(content=user_message)]
             }
 
             thread_id_sessao = sender_phone or f"tenant_{tenant_id}_default"
@@ -197,8 +199,9 @@ async def processar_mensagem_e_responder(
         # COMENTÁRIO 4: Dispara uma ÚNICA mensagem para o WhatsApp enquanto a conversa ainda está travada.
         if resposta_final:
             endpoint_send = f"{EVOLUTION_API_URL}/message/sendText/{instance_name}"
+            numero_limpo = sender_phone.split("@")[0].strip() if sender_phone else ""
             payload_envio = {
-                "number": sender_phone,
+                "number": numero_limpo,
                 "text": resposta_final
             }
 
