@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 from modules.token.token_verify import verificar_token
 from datetime import datetime, timedelta, timezone
-
+from urllib.parse import urlparse
+from modules.tenant.tenant_service import TenantService
 from app.core.limiter import limiter
 SECRET_KEY = os.getenv("SECRET_KEY", "mudar_senha_123")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
@@ -138,13 +139,42 @@ async def chat_interaction(
    
         
 @router.get("/chat/init")
+@limiter.limit("5/minute")
 def inicializar_widget(request: Request, tenant_id: str | None = Header(default=None, alias="X-Tenant-ID")):
     """
     O frontend chama esta rota passando o tenant_id aberto na URL UMA ÚNICA VEZ.
     O backend devolve um token assinado e temporário.
     """
+    tenant_service = TenantService()
+    if not tenant_id or not str(tenant_id).strip():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso negado."
+        )
+    
+    tenant_config = tenant_service.get_tenant_by_id(tenant_id)
+        
+    origin = request.headers.get("origin", "") or request.headers.get("referer", "") or ""
+    
+    netloc_bruto = urlparse(origin).netloc.lower()
+    domain_origen = netloc_bruto.split(":")[0] if netloc_bruto else ""
+    
+    if not tenant_config:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso negado."
+        )
+        
+    authorized_domains = [d.lower() for d in tenant_config.get("allowed_domains", [])]
+    if not tenant_config or domain_origen not in authorized_domains:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso negado."
+        )
+    
     # Define que o token vai expirar em exatos 30 minutos a partir de agora
     tempo_expiracao = datetime.now(timezone.utc) + timedelta(minutes=30)
+    
     
     # O "payload" é o pacote de dados que vai viajar dentro do token escondido
     payload = {
