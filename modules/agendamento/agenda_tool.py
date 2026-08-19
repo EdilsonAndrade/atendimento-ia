@@ -13,7 +13,9 @@ class DisponibilidadeInput(BaseModel):
     
     tenant_id: str = Field(..., description="ID do tenant do cliente (ex: '987654')")
     profissional: str = Field(..., description="Nome do profissional/barbeiro (ex: 'Daniel')")
-    data_agendamento: str = Field(..., alias="data", description="Data do agendamento no formato YYYY-MM-DD (ex: '2026-07-22')")
+    # CRITICO: NAO usar data de exemplo aqui; um literal fixo na descricao e enviado ao
+    # LLM em toda chamada e pode ser copiado como se fosse a data real.
+    data_agendamento: str = Field(..., alias="data", description="Data do agendamento no formato YYYY-MM-DD. SEMPRE calcule a partir da tabela CALENDAR REFERENCE do prompt, nunca invente ou reutilize uma data de exemplo.")
 
 
 @tool("consultar_horarios_disponiveis", args_schema=DisponibilidadeInput)

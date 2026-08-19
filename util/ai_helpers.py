@@ -147,6 +147,14 @@ BOOKING_SUCCESS_MARKERS = (
     "horario agendado",
     "evento criado",
     "convite enviado",
+    # Variacoes mais curtas que o modelo usa sem dizer "com sucesso" explicitamente -
+    # sem isso, uma confirmacao fabricada (sem chamar a tool) passava pelo guard.
+    "agendamento esta confirmado",
+    "seu agendamento esta confirmado",
+    "agendamento confirmado",
+    "esta confirmado",
+    "ja esta agendado",
+    "ja esta marcado",
 )
 BOOKING_CONFIRMATION_PROMPTS = (
     "posso confirmar esse agendamento",

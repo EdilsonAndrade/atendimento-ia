@@ -7,7 +7,7 @@ class DeleteAgendaInput(BaseModel):
     
     tenant_id: str = Field(..., description="ID do tenant do cliente (ex: '987654')")
     cliente_email: str = Field(..., description="E-mail from client", alias="email")
-    data_agendamento: str = Field(..., description="Booking date example (YYYY-MM-DD) (ex: 2026-08-05)", alias="data")
+    data_agendamento: str = Field(..., description="Booking date (YYYY-MM-DD). Always compute from the CALENDAR REFERENCE table in the system prompt, never invent or reuse an example date.", alias="data")
     horario_agendamento: str = Field(..., description="Booking time, example (HH:MM) 07:25 or 17:25")
     
     

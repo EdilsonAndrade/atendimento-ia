@@ -100,15 +100,17 @@ class PromptManagerRepository:
                 return cur.fetchone()
 
     def get_guardrails_by_prompt(self, prompt_id: str) -> List[Dict[str, Any]]:
-        """Busca todos os guardrails vinculados ao prompt via N:N."""
+        """Busca os guardrails vinculados ao prompt via N:N, MAIS todos os guardrails
+        marcados como is_global=TRUE (aplicados a todo tenant automaticamente, sem
+        precisar de associação manual em prompt_guardrails)."""
         with self.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("""
-                    SELECT g.id, g.titulo, g.conteudo
+                    SELECT DISTINCT g.id, g.titulo, g.conteudo
                     FROM guardrails g
-                    JOIN prompt_guardrails pg ON g.id = pg.guardrail_id
-                    WHERE pg.prompt_id = %s
-                """, (prompt_id,))
+                    LEFT JOIN prompt_guardrails pg ON g.id = pg.guardrail_id AND pg.prompt_id = %s
+                    WHERE g.is_global = TRUE OR pg.prompt_id = %s
+                """, (prompt_id, prompt_id))
                 return cur.fetchall()
     
     def update_prompt(self, prompt_id: str, titulo: str, conteudo: str, is_default: bool) -> Optional[Dict[str, Any]]:

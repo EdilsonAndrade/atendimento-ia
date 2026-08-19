@@ -16,7 +16,9 @@ class BookingInput(BaseModel):
     servico: str = Field(..., description="Nome do serviço desejado (ex: 'Corte Degradê', 'Barba Terapia')")
     profissional: str = Field(..., description="Nome do barbeiro/profissional escolhido")
     email_profissional: str = Field(..., description="E-mail do profissional para vincular à agenda do Google Calendar")
-    data_agendamento: str = Field(..., alias="data", description="Data do agendamento no formato YYYY-MM-DD (ex: '2026-07-25')")
+    # CRITICO: NAO usar data de exemplo aqui; um literal fixo na descricao e enviado ao
+    # LLM em toda chamada e pode ser copiado como se fosse a data real.
+    data_agendamento: str = Field(..., alias="data", description="Data do agendamento no formato YYYY-MM-DD. SEMPRE calcule a partir da tabela CALENDAR REFERENCE do prompt, nunca invente ou reutilize uma data de exemplo.")
     horario: str = Field(..., alias="hora", description="Horário do agendamento no formato HH:MM (ex: '14:30')")
 
 def init_booking_table():

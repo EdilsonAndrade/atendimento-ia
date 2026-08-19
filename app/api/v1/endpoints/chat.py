@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request, status, HTTPException, Header, Depends
 from langchain_core.messages import HumanMessage
 from app.schemas.chat import MessageRequest, ChatResponse
 from modules.ia.agent_graph import get_compiled_graph
+from modules.ia.thread_session import resolve_active_thread_id
 logger = logging.getLogger(__name__)
 router = APIRouter()
 from modules.token.token_verify import verificar_token
@@ -76,14 +77,25 @@ async def chat_interaction(
     }
     
     # Enviamos o tenant_id (para o RAG) e o thread_id (para o PostgresSaver)
-    thread_id_sessao = payload.thread_id or f"tenant_{tenant_id}_default"
-    conversation_key = f"{tenant_id}:{thread_id_sessao}"
+    # CRÍTICO: o PostgresSaver do LangGraph indexa o checkpoint SOMENTE pelo thread_id.
+    # Se dois tenants (ou dois visitantes sem thread_id próprio) usarem o mesmo valor,
+    # eles passam a compartilhar o MESMO histórico de mensagens persistido, misturando
+    # datas e agendamentos de conversas antigas/de outros clientes na conversa atual.
+    # Por isso o thread_id enviado ao grafo é SEMPRE prefixado com o tenant_id.
+    thread_id_sessao = payload.thread_id or "default_session"
+    thread_id_base = f"{tenant_id}:{thread_id_sessao}"
+    # O thread_id do widget fica salvo no localStorage do cliente e pode ser reaproveitado
+    # por dias/semanas. Resolvemos aqui, no backend, se essa conversa esta "parada" ha muito
+    # tempo (CHAT_SESSION_IDLE_MINUTES) e, se sim, geramos uma nova sessao automaticamente -
+    # sem depender do front avisar o cliente pra abrir uma conversa nova.
+    thread_id_grafo = resolve_active_thread_id(thread_id_base)
+    conversation_key = thread_id_grafo
     conversation_lock = _chat_locks.setdefault(conversation_key, asyncio.Lock())
     
     configuracao_requisicao = {
         "configurable": {
             "tenant_id": tenant_id,
-            "thread_id": thread_id_sessao
+            "thread_id": thread_id_grafo
         }
     }
     

@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.api.v1.router import api_router
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.widget_cors import WidgetCORSMiddleware
 from dotenv import load_dotenv
 from app.core.security import get_swagger_credentials
 from app.api.v1.webhooks.whatsapp import router as whatsapp_router
@@ -84,6 +85,7 @@ app.add_middleware(
     allow_headers=["*"],  # Permite todos os headers (incluindo X-Tenant-ID, Content-Type, etc.)
     
 )
+app.add_middleware(WidgetCORSMiddleware)
 app.include_router(
     whatsapp_router,
     prefix="/api/v1",

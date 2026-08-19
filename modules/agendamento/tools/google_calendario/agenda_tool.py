@@ -4,8 +4,11 @@ from pydantic import BaseModel, Field
 
 class CreateAppointmentInput(BaseModel):
     summary: str = Field(description="Nome do cliente e/ou tipo de atendimento")
-    start_time: str = Field(description="Data e hora de início no formato ISO 8601 (ex: 2026-08-10T14:00:00-03:00)")
-    end_time: str = Field(description="Data e hora de término no formato ISO 8601 (ex: 2026-08-10T15:00:00-03:00)")
+    # CRITICO: NAO usar data de exemplo aqui. Um literal fixo nesta descricao e enviado
+    # ao LLM em toda chamada e pode ser copiado como se fosse a data real (bug ja visto
+    # em producao). A data DEVE vir sempre da tabela CALENDAR REFERENCE do system prompt.
+    start_time: str = Field(description="Data e hora de início no formato ISO 8601 (YYYY-MM-DDTHH:MM:SS-03:00). SEMPRE calcule a partir da tabela CALENDAR REFERENCE do prompt, nunca invente ou reutilize uma data de exemplo.")
+    end_time: str = Field(description="Data e hora de término no formato ISO 8601 (YYYY-MM-DDTHH:MM:SS-03:00). SEMPRE calcule a partir da tabela CALENDAR REFERENCE do prompt, nunca invente ou reutilize uma data de exemplo.")
     description: str = Field(default="", description="Telefone do cliente, e-mail ou observações sobre o atendimento")
 
 def build_agendar_tool(tenant_id: str, tenant_service, calendar_service) ->str:

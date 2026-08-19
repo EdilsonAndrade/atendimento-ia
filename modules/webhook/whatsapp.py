@@ -6,6 +6,7 @@ import os
 import httpx
 from infrastructure.connection import DB_URI, get_db_connection
 from modules.ia.agent_graph import get_compiled_graph
+from modules.ia.thread_session import resolve_active_thread_id
 from dotenv import load_dotenv
 load_dotenv()  # Carrega variáveis de ambiente do arquivo .env
 logger = logging.getLogger("whatsapp_webhook")
@@ -162,12 +163,21 @@ async def processar_mensagem_e_responder(
                 "messages": [HumanMessage(content=user_message)]
             }
 
-            thread_id_sessao = sender_phone or f"tenant_{tenant_id}_default"
+            # CRÍTICO: o PostgresSaver indexa o checkpoint SOMENTE pelo thread_id, sem
+            # considerar o tenant_id. Usar apenas o telefone como thread_id faz com que
+            # o mesmo número, se falar com tenants diferentes (ou em instâncias distintas),
+            # compartilhe o histórico persistido, vazando datas/agendamentos de outra
+            # conversa para dentro da conversa atual. Por isso sempre prefixamos com o tenant_id.
+            thread_id_sessao = sender_phone or instance_name or "default_session"
+            thread_id_base = f"{tenant_id}:{thread_id_sessao}"
+            # O numero de telefone e fixo pro cliente (nao muda como o localStorage do widget),
+            # entao sem essa expiracao por inatividade a mesma thread ficaria ativa para sempre.
+            thread_id_grafo = resolve_active_thread_id(thread_id_base)
 
             configuracao_requisicao = {
                 "configurable": {
                     "tenant_id": tenant_id,
-                    "thread_id": thread_id_sessao
+                    "thread_id": thread_id_grafo
                 }
             }
 

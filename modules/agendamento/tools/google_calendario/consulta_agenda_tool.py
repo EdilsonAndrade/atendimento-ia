@@ -3,8 +3,11 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 class SearchAppointmentInput(BaseModel):
-    start_time: str = Field(description="Data/hora inicial para busca no formato ISO (ex: 2026-08-10T00:00:00-03:00)")
-    end_time: str = Field(description="Data/hora final para busca no formato ISO (ex: 2026-08-10T23:59:59-03:00)")
+    # CRITICO: NAO usar data de exemplo aqui. Um literal fixo nesta descricao e enviado
+    # ao LLM em toda chamada e pode ser copiado como se fosse a data real (bug ja visto
+    # em producao). A data DEVE vir sempre da tabela CALENDAR REFERENCE do system prompt.
+    start_time: str = Field(description="Data/hora inicial para busca no formato ISO (YYYY-MM-DDTHH:MM:SS-03:00). SEMPRE calcule a partir da tabela CALENDAR REFERENCE do prompt, nunca invente ou reutilize uma data de exemplo.")
+    end_time: str = Field(description="Data/hora final para busca no formato ISO (YYYY-MM-DDTHH:MM:SS-03:00). SEMPRE calcule a partir da tabela CALENDAR REFERENCE do prompt, nunca invente ou reutilize uma data de exemplo.")
     query: str = Field(default="", description="Nome ou telefone do cliente para filtrar os eventos (opcional)")
 
 def build_consulta_tool(tenant_id: str, tenant_service, calendar_service):
