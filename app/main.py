@@ -16,6 +16,7 @@ from app.api.v1.webhooks.whatsapp import router as whatsapp_router
 from app.api.v1.endpoints.evolution_whatsapp_instances import router as evolution_instances_router
 from app.api.v1.endpoints.tenant import router as tenant_router
 from app.api.v1.endpoints.prompt_manager import router as prompt_manager_router
+from app.api.v1.endpoints.knowledge_base import router as knowledge_base_router
 from fastapi import FastAPI, Depends
 from slowapi import _rate_limit_exceeded_handler
 # get_remote_address: Função que pega o IP real do usuário (ignorando proxies se configurado certo).
@@ -103,6 +104,10 @@ app.include_router(
 )
 app.include_router(
     prompt_manager_router,
+    prefix="/api/v1"
+)
+app.include_router(
+    knowledge_base_router,
     prefix="/api/v1"
 )
 

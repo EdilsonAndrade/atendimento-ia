@@ -66,6 +66,32 @@ class TenantRepository:
             }
         return None
 
+    def search_tenants(self, term: str, limit: int = 20) -> list:
+        # Busca parcial e case-insensitive por id ou name
+        search_query = """
+        SELECT id, name, google_calendar_id, allowed_domains, created_at, updated_at
+        FROM tenants
+        WHERE id ILIKE %s OR name ILIKE %s
+        ORDER BY name
+        LIMIT %s;
+        """
+        pattern = f"%{term}%"
+        cursor = self.db_connection.cursor()
+        cursor.execute(search_query, (pattern, pattern, limit))
+        rows = cursor.fetchall()
+        cursor.close()
+        return [
+            {
+                'id': row[0],
+                'name': row[1],
+                'google_calendar_id': row[2],
+                'allowed_domains': row[3],
+                'created_at': row[4],
+                'updated_at': row[5],
+            }
+            for row in rows
+        ]
+
     def delete_tenant(self, tenant_id) -> int | None:
         # Logic to delete a tenant from the database
         delete_query = "DELETE FROM tenants WHERE id = %s RETURNING id;"

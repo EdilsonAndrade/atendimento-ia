@@ -16,6 +16,9 @@ class TenantService:
         """Alias for get_tenant — used by Google Calendar tools."""
         return self.get_tenant(tenant_id)
 
+    def search_tenants(self, term: str, limit: int = 20) -> list:
+        return self.tenant_repository.search_tenants(term, limit)
+
     def update_tenant(self, tenant_id: str, tenant_data: dict) -> dict | None:
         # Logic to update an existing tenant using the repository
         return self.tenant_repository.update_tenant(tenant_id, tenant_data)

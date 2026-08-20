@@ -1,9 +1,18 @@
 from fastapi import APIRouter, HTTPException
 
 # Importa o método de conexão direto do seu módulo de banco
-from infrastructure.connection import get_db_connection 
-from modules.prompt_manager.prompt_manager_service import PromptManagerService
-from app.schemas.prompt_manager import GuardrailCreateSchema, PromptCreateSchema, TenantPromptLinkSchema
+from infrastructure.connection import get_db_connection
+from modules.prompt_manager.prompt_manager_service import (
+    DefaultPromptNotConfiguredError,
+    PromptManagerService,
+)
+from modules.tenant.tenant_service import TenantService
+from app.schemas.prompt_manager import (
+    GuardrailCreateSchema,
+    PromptCreateSchema,
+    TenantPromptLinkSchema,
+    TenantPromptOverviewResponse,
+)
 router = APIRouter(prefix="/prompt-manager", tags=["Prompt Manager"])
 
 
@@ -48,6 +57,14 @@ def update_prompt(prompt_id: str, payload: PromptCreateSchema):
         raise HTTPException(status_code=404, detail="Prompt não encontrado")
     return updated_prompt
 
+@router.delete("/prompts/{prompt_id}", status_code=204)
+def delete_prompt(prompt_id: str):
+    service = PromptManagerService(get_db_connection)
+    deleted = service.delete_prompt(prompt_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Prompt não encontrado")
+
+
 @router.put("/guardrails/{guardrail_id}")
 def update_guardrail(guardrail_id: str, payload: GuardrailCreateSchema):
     service = PromptManagerService(get_db_connection)
@@ -58,13 +75,18 @@ def update_guardrail(guardrail_id: str, payload: GuardrailCreateSchema):
         raise HTTPException(status_code=404, detail="Guardrail não encontrado")
     return updated_guardrail
 
-@router.get("/tenant/{tenant_id}")
+@router.get(
+    "/tenant/{tenant_id}",
+    response_model=TenantPromptOverviewResponse,
+    summary="Prompt e guardrails vinculados a um tenant (com fallback para o prompt padrão)",
+)
 def get_tenant_prompt_details(tenant_id: str):
+    tenant_service = TenantService()
+    if tenant_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=404, detail="Tenant não encontrado")
+
     service = PromptManagerService(get_db_connection)
-    details = service.get_tenant_prompt_details(tenant_id)
-    if not details:
-        raise HTTPException(
-            status_code=404, 
-            detail=f"Nenhum prompt personalizado ou vínculo ativo encontrado para o tenant '{tenant_id}'."
-        )
-    return details
+    try:
+        return service.get_tenant_prompt_details(tenant_id)
+    except DefaultPromptNotConfiguredError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))

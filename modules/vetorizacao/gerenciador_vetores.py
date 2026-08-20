@@ -1,4 +1,5 @@
 import os
+import psycopg
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_postgres import PGVector
 from langchain_core.documents import Document
@@ -47,6 +48,24 @@ class GerenciadorVetores:
         # COMENTÁRIO: Insere os documentos diretamente no banco de dados vetorial
         self.banco.add_documents(documentos)
         print("Vetores salvos com sucesso no PostgreSQL!")
+
+    def deletar_por_tenant(self, tenant_id: str) -> None:
+        """
+        COMENTÁRIO: Remove todos os vetores de um tenant específico desta collection.
+        Usado antes de reindexar (edição da base de conhecimento) e ao excluí-la —
+        garante que a edição substitui o conteúdo anterior em vez de acumular vetores
+        antigos e novos coexistindo.
+        """
+        delete_query = """
+            DELETE FROM langchain_pg_embedding
+            WHERE collection_id = (
+                SELECT uuid FROM langchain_pg_collection WHERE name = %s
+            )
+            AND cmetadata->>'tenant_id' = %s;
+        """
+        with psycopg.connect(DB_URI, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(delete_query, (self.collection_name, tenant_id))
 
     def search_context(self, pergunta: str, tenant_id: str, quantidade_resultados: int = 1):
         """

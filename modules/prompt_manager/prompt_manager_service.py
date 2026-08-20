@@ -1,5 +1,11 @@
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from modules.prompt_manager.prompt_manager_repository import PromptManagerRepository
+
+
+class DefaultPromptNotConfiguredError(Exception):
+    """Levantada quando um tenant não tem vínculo ativo e não existe nenhum
+    prompt marcado como is_default=TRUE para servir de fallback."""
+
 
 class PromptManagerService:
     def __init__(self, get_connection_func):
@@ -57,6 +63,9 @@ class PromptManagerService:
             **kwargs
         )
         
+    def delete_prompt(self, prompt_id: str) -> bool:
+        return self.repository.delete_prompt(prompt_id)
+
     def update_prompt_with_relations(
         self, 
         prompt_id: str,
@@ -73,5 +82,44 @@ class PromptManagerService:
         self.repository.sync_prompt_guardrails(prompt_id, guardrail_ids)
         return prompt
 
-    def get_tenant_prompt_details(self, tenant_id: str):
-        return self.repository.get_tenant_prompt_details(tenant_id)
+    def get_tenant_prompt_details(self, tenant_id: str) -> Dict[str, Any]:
+        """Retorna o prompt + guardrails do tenant para exibição no Painel Administrador.
+
+        Se o tenant tiver um vínculo ativo em tenant_prompts, retorna esse prompt
+        personalizado. Caso contrário, cai no prompt padrão (is_default=TRUE) e nos
+        guardrails globais — nunca retorna vazio silenciosamente nem 404 por falta
+        de personalização (essa decisão é responsabilidade do endpoint, que checa a
+        existência do tenant antes de chamar este método).
+        """
+        details = self.repository.get_tenant_prompt_details(tenant_id)
+        if details:
+            return {
+                "tenant_id": details["tenant_id"],
+                "prompt_id": str(details["prompt_id"]),
+                "prompt_titulo": details["prompt_titulo"],
+                "prompt_conteudo": details["prompt_conteudo_base"],
+                "custom_content_override": details["custom_content_override"],
+                "is_default_prompt": False,
+                "guardrails_associados": self._stringify_guardrail_ids(details["guardrails_associados"]),
+            }
+
+        default_prompt = self.repository.get_default_prompt()
+        if not default_prompt:
+            raise DefaultPromptNotConfiguredError(
+                "Nenhum prompt padrão (is_default=TRUE) está configurado."
+            )
+
+        return {
+            "tenant_id": tenant_id,
+            "prompt_id": str(default_prompt["id"]),
+            "prompt_titulo": default_prompt["titulo"],
+            "prompt_conteudo": default_prompt["conteudo"],
+            "custom_content_override": None,
+            "is_default_prompt": True,
+            "guardrails_associados": self._stringify_guardrail_ids(self.repository.get_global_guardrails()),
+        }
+
+    @staticmethod
+    def _stringify_guardrail_ids(guardrails: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # O driver do Postgres devolve `id` como uuid.UUID; a API expõe ids como string.
+        return [{**guardrail, "id": str(guardrail["id"])} for guardrail in guardrails]

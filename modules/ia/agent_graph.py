@@ -41,6 +41,17 @@ llm_model = os.getenv("LLM", "llama3.3")
 api_key = os.getenv("API_KEY")
 print(f"Acessando o banco {DB_URI}")
 
+# Regra anti-alucinação aplicada em cima de QUALQUER prompt (institucional, ou operacional
+# vindo do banco ou do fallback local) — garante que o nome do negócio, serviços e preços
+# nunca sejam inventados, mesmo que o prompt customizado do tenant no banco não a inclua.
+GROUNDEDNESS_RULE = (
+    "GROUNDEDNESS RULE (CRITICAL): Use ONLY the information provided in the knowledge base context to answer "
+    "questions about the business name, services, prices, professionals, or history. NEVER hallucinate, invent, or assume "
+    "a business name, service, or professional that is not explicitly present in that context — including generic examples "
+    "like 'barbearia', 'André', or any other placeholder business. If the conversation history conflicts with the knowledge "
+    "base context, the knowledge base always wins — it is the current source of truth, the history may be stale.\n"
+)
+
 # Instâncias globais dos serviços de infraestrutura
 tenant_service = TenantService()
 calendar_service = GoogleCalendarService(service_account_path="credentials.json")
@@ -246,8 +257,10 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     # 4. Prompt com RAG + Histórico de Conversa
     prompt_final = (
         f"You are an expert assistant for the business. Answer the user's question using the provided context below.\n"
-        f"You also have access to the conversation history with this user. Use it if they refer to previous topics.\n"
-        f"CRITICAL GUARDRAIL: If the answer is not in the context or history, state clearly that you do not have that information.\n"
+        f"{GROUNDEDNESS_RULE}"
+        f"You also have access to the conversation history with this user. Use it only for conversational continuity (e.g., what "
+        f"they already asked), never as a source of factual business information.\n"
+        f"CRITICAL GUARDRAIL: If the answer is not in the context, state clearly that you do not have that information.\n"
         f"CRITICAL: Detect the language of the user's question and respond EXCLUSIVELY in that same language.\n"
         f"Provide a complete, polite, and professional answer.\n\n"
         f"--- CONVERSATION HISTORY ---\n"
@@ -291,11 +304,16 @@ def operational_node(state: AgentState, config: RunnableConfig):
     tabela_dias, hora_atual_str, data_hoje_iso = get_tabela_dias(7)
     system_prompt_str = carregar_operacional_prompt(
                             tenant_id=tenant_id,
-                            tabela_calendario_str=tabela_dias, 
-                            hora_atual_str=hora_atual_str, 
+                            tabela_calendario_str=tabela_dias,
+                            hora_atual_str=hora_atual_str,
                             data_hoje_iso=data_hoje_iso,
                             contexto_formatado=contexto_formatado
                         )
+
+    # Reforça a regra anti-alucinação por cima do prompt carregado — necessário porque
+    # carregar_operacional_prompt() pode devolver um prompt customizado do tenant vindo do
+    # banco, que não necessariamente inclui a GROUNDEDNESS RULE presente no fallback local.
+    system_prompt_str = f"{system_prompt_str}\n\n{GROUNDEDNESS_RULE}"
 
     # Injeta dados de contato já vistos na sessão para evitar perguntas repetidas.
     profile = extract_customer_profile(state["messages"])

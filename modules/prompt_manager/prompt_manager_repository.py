@@ -135,6 +135,40 @@ class PromptManagerRepository:
                 """, (titulo, conteudo, is_global, guardrail_id))
                 return cur.fetchone()
             
+    def get_default_prompt(self) -> Optional[Dict[str, Any]]:
+        """Busca o prompt marcado como padrão (is_default=TRUE), usado como fallback
+        para tenants sem vínculo ativo em tenant_prompts."""
+        with self.get_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("""
+                    SELECT id, titulo, conteudo
+                    FROM prompts
+                    WHERE is_default = TRUE
+                    LIMIT 1
+                """)
+                return cur.fetchone()
+
+    def get_global_guardrails(self) -> List[Dict[str, Any]]:
+        """Busca todos os guardrails marcados como is_global=TRUE, aplicados
+        automaticamente a qualquer tenant, independente de vínculo de prompt."""
+        with self.get_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("""
+                    SELECT id, titulo, conteudo, is_global
+                    FROM guardrails
+                    WHERE is_global = TRUE
+                """)
+                return cur.fetchall()
+
+    def delete_prompt(self, prompt_id: str) -> bool:
+        """Remove um prompt e seus vínculos (prompt_guardrails, tenant_prompts)."""
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM prompt_guardrails WHERE prompt_id = %s", (prompt_id,))
+                cur.execute("DELETE FROM tenant_prompts WHERE prompt_id = %s", (prompt_id,))
+                cur.execute("DELETE FROM prompts WHERE id = %s", (prompt_id,))
+                return cur.rowcount > 0
+
     def get_tenant_prompt_details(self, tenant_id: str) -> Optional[Dict[str, Any]]:
         """Busca o prompt associado ao tenant e a lista de guardrails vinculados a esse prompt."""
         with self.get_connection() as conn:

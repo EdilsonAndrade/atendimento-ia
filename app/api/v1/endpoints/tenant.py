@@ -1,8 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from app.schemas.tenant import TenantCreate, TenantUpdate, TenantResponse, DeleteResponse
 from modules.tenant.tenant_service import TenantService
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
+
+
+@router.get("", response_model=list[TenantResponse], summary="Buscar tenants por nome ou id")
+def search_tenants(
+    q: str = Query(..., min_length=1, description="Termo de busca — casado parcialmente contra id/name"),
+    limit: int = Query(20, ge=1, le=100),
+    tenant_service: TenantService = Depends(),
+):
+    return tenant_service.search_tenants(q, limit)
 
 
 @router.post("/", response_model=TenantResponse)
