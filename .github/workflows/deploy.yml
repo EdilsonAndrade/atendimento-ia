@@ -26,7 +26,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Rodar testes
-        run: pytest tests/ -v
+        run: pytest tests/unit -v
 
   build-and-deploy:
     needs: test

@@ -52,13 +52,29 @@ GROUNDEDNESS_RULE = (
     "base context, the knowledge base always wins — it is the current source of truth, the history may be stale.\n"
 )
 
-# Instâncias globais dos serviços de infraestrutura
-tenant_service = TenantService()
-calendar_service = GoogleCalendarService(service_account_path="credentials.json")
+# Instâncias globais dos serviços de infraestrutura.
+# Envolvidas em try/except (mesmo padrão do graph_app em chat.py) para que a
+# indisponibilidade de infra externa (Postgres, credentials.json) não impeça
+# o módulo de ser importado — o erro real só aparece quando o serviço é usado.
+try:
+    tenant_service = TenantService()
+except Exception as e:
+    print(f"⚠️ Alerta: Erro ao inicializar TenantService: {e}")
+    tenant_service = None
+
+try:
+    calendar_service = GoogleCalendarService(service_account_path="credentials.json")
+except Exception as e:
+    print(f"⚠️ Alerta: Erro ao inicializar GoogleCalendarService: {e}")
+    calendar_service = None
 
 print("🚀 [GLOBAL] Inicializando Gerenciador de Vetores e Modelo HuggingFace...")
 # O modelo sobe para a RAM APENAS UMA VEZ ao ligar o container!
-vector_manager_global = GerenciadorVetores()
+try:
+    vector_manager_global = GerenciadorVetores()
+except Exception as e:
+    print(f"⚠️ Alerta: Erro ao inicializar GerenciadorVetores: {e}")
+    vector_manager_global = None
 # ============================================================================
 # PASSO 1: ESTRUTURA DO ESTADO (O "Quadro Negro" Compartilhado)
 # ============================================================================
