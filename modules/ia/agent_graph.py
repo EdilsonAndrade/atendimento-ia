@@ -14,7 +14,11 @@ from modules.agendamento.agenda_tool import consultar_horarios_disponiveis
 from modules.agendamento.delete_agenda_tool import cancelar_agendamento
 from modules.agendamento.consulta_agenda_tool import consulta_agendamento
 from infrastructure.connection import DB_URI
-from prompts.load_prompt import carregar_operacional_prompt, carregar_guardrails
+from prompts.load_prompt import (
+    carregar_operacional_prompt,
+    carregar_institutional_prompt,
+    carregar_chitchat_prompt,
+)
 from modules.agendamento.tools.google_calendario.agenda_tool import build_agendar_tool
 from modules.agendamento.tools.google_calendario.consulta_agenda_tool import build_consulta_tool
 from modules.agendamento.tools.google_calendario.delete_agenda_tool import build_delete_tool
@@ -270,28 +274,18 @@ def institutional_node(state: AgentState, config: RunnableConfig):
         elif msg.type == "ai" and not msg.content.startswith("Routing decision:"):
             historico_texto += f"Assistant: {msg.content}\n"
 
-    # Guardrails do tenant (vinculados no banco + is_global=TRUE, com fallback local)
-    # — mesma fonte usada pelo operational_node, garante recusa de piadas/off-topic
-    # também no fluxo institucional, que antes não tinha guardrail nenhum.
-    guardrails_text = carregar_guardrails(tenant_id)
-
-    # 4. Prompt com RAG + Histórico de Conversa
-    prompt_final = (
-        f"You are an expert assistant for the business. Answer the user's question using the provided context below.\n"
-        f"{GROUNDEDNESS_RULE}"
-        f"{guardrails_text}\n\n"
-        f"You also have access to the conversation history with this user. Use it only for conversational continuity (e.g., what "
-        f"they already asked), never as a source of factual business information.\n"
-        f"CRITICAL GUARDRAIL: If the answer is not in the context, state clearly that you do not have that information.\n"
-        f"CRITICAL: Detect the language of the user's question and respond EXCLUSIVELY in that same language.\n"
-        f"Provide a complete, polite, and professional answer.\n\n"
-        f"--- CONVERSATION HISTORY ---\n"
-        f"{historico_texto}\n\n"
-        f"--- CONTEXT FROM KNOWLEDGE BASE ---\n"
-        f"{contexto_formatado}\n\n"
-        f"User Question: {pergunta_usuario}"
+    # 4. Prompt institutional do tenant (vínculo próprio > fallback para o prompt/guardrails
+    # do operational_node do tenant, ver FR-004) + RAG + Histórico de Conversa (EDI-42)
+    prompt_final = carregar_institutional_prompt(
+        tenant_id=tenant_id,
+        contexto_formatado=contexto_formatado,
+        historico_texto=historico_texto,
+        pergunta_usuario=pergunta_usuario,
     )
-    
+    # Reforça a regra anti-alucinação por cima do prompt carregado — necessário porque o
+    # template (do banco ou local) não necessariamente a inclui, mesmo padrão do operational_node.
+    prompt_final = f"{prompt_final}\n\n{GROUNDEDNESS_RULE}"
+
     resposta_ia = llm.invoke(prompt_final)
     print(" -> Resposta institucional formulada com sucesso!")
     return {"messages": [AIMessage(content=resposta_ia.content)]}
@@ -448,13 +442,13 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
     Nó de conversa casual/chitchat protegido com SystemMessage e Guardrails.
     """
     print("\n --- [NÓ: chitchat_node] Processando conversa casual... ---")
-    
-    # 1. Carrega o guardrail de recusa
-    caminho_guardrail = os.path.join(os.path.dirname(__file__), "..", "..", "prompts", "guardrails.md")
-    guardrails_text = ""
-    if os.path.exists(caminho_guardrail):
-        with open(caminho_guardrail, "r", encoding="utf-8") as f:
-            guardrails_text = f.read()
+
+    configurable = config.get("configurable", {})
+    tenant_id = configurable.get("tenant_id", "default_tenant")
+
+    # 1. Carrega o prompt do chitchat_node do tenant (vínculo próprio > padrão do nó >
+    # texto fixo local), já com os guardrails aplicáveis embutidos (EDI-42)
+    system_prompt_str = carregar_chitchat_prompt(tenant_id)
 
     # 2. Preserva histórico real (incluindo ToolMessages) e sanitiza sequência.
     historico_com_tools = [
@@ -473,14 +467,8 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
     historico_sanitizado = sanitize_for_openai_strict_format(historico_bruto)
 
     # 3. MONTA O PROMPT CORRETO COMO SystemMessage (E NÃO AIMessage)
-    system_prompt = SystemMessage(content=(
-        f"{guardrails_text}\n\n"
-        "You are a polite AI assistant for the business.\n"
-        "Respond courteously to simple greetings ('olá', 'bom dia') or farewells.\n"
-        "CRITICAL: If the user asks for jokes, off-topic entertainment, or uses inappropriate language, REJECT politely using the guardrail rule.\n"
-        "ALWAYS respond in the exact same language as the user."
-    ))
-    
+    system_prompt = SystemMessage(content=system_prompt_str)
+
     # Envia o SystemMessage no topo + histórico sanitizado
     mensagens_para_ia = [system_prompt] + historico_sanitizado
     

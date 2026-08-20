@@ -1,7 +1,9 @@
 # --- SCHEMAS (PYDANTIC) ---
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel
+
+NodeType = Literal["operational", "institutional", "chitchat"]
 
 class GuardrailCreateSchema(BaseModel):
     titulo: str
@@ -12,6 +14,7 @@ class PromptCreateSchema(BaseModel):
     titulo: str
     conteudo: str
     is_default: bool = False
+    node_type: NodeType = "operational"
     guardrail_ids: List[str] = []
 
 class TenantPromptLinkSchema(BaseModel):
@@ -27,6 +30,7 @@ class GuardrailAssociadoSchema(BaseModel):
 
 class TenantPromptOverviewResponse(BaseModel):
     tenant_id: str
+    node_type: NodeType
     prompt_id: str
     prompt_titulo: str
     prompt_conteudo: str

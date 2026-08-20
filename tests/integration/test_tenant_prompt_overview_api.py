@@ -18,7 +18,8 @@ def make_fake_prompt_manager_service(result=None, error=None):
         def __init__(self, *_args, **_kwargs):
             pass
 
-        def get_tenant_prompt_details(self, tenant_id):
+        def get_tenant_prompt_details(self, tenant_id, node_type="operational"):
+            self.requested_node_type = node_type
             if error:
                 raise error
             return result
@@ -52,6 +53,7 @@ def test_returns_custom_prompt_overview_when_link_exists(monkeypatch):
         tenant={"id": "1234"},
         result={
             "tenant_id": "1234",
+            "node_type": "operational",
             "prompt_id": "p1",
             "prompt_titulo": "Atendimento Barbearia",
             "prompt_conteudo": "conteudo custom",
@@ -79,6 +81,7 @@ def test_returns_default_prompt_fallback_when_no_link(monkeypatch):
         tenant={"id": "5678"},
         result={
             "tenant_id": "5678",
+            "node_type": "operational",
             "prompt_id": "dP",
             "prompt_titulo": "Prompt Padrão",
             "prompt_conteudo": "conteudo padrão",
@@ -98,6 +101,50 @@ def test_returns_default_prompt_fallback_when_no_link(monkeypatch):
     assert body["is_default_prompt"] is True
     assert body["is_active"] is True
     assert body["prompt_id"] == "dP"
+
+
+def test_node_type_query_param_defaults_to_operational_and_is_forwarded(monkeypatch):
+    monkeypatch.setattr(prompt_manager_module, "TenantService", lambda: FakeTenantService({"id": "1234"}))
+    captured = {}
+
+    class _FakePromptManagerService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def get_tenant_prompt_details(self, tenant_id, node_type="operational"):
+            captured["node_type"] = node_type
+            return {
+                "tenant_id": tenant_id,
+                "node_type": node_type,
+                "prompt_id": "p1",
+                "prompt_titulo": "Chitchat - Barbearia",
+                "prompt_conteudo": "conteudo custom",
+                "custom_content_override": None,
+                "is_default_prompt": False,
+                "is_active": True,
+                "guardrails_associados": [],
+            }
+
+    monkeypatch.setattr(prompt_manager_module, "PromptManagerService", _FakePromptManagerService)
+    app = FastAPI()
+    app.include_router(prompt_manager_module.router, prefix="/api/v1")
+    client = TestClient(app)
+
+    # Sem query param -> default "operational"
+    response = client.get("/api/v1/prompt-manager/tenant/1234")
+    assert response.status_code == 200
+    assert captured["node_type"] == "operational"
+    assert response.json()["node_type"] == "operational"
+
+    # Com query param explícito -> repassado ao service
+    response = client.get("/api/v1/prompt-manager/tenant/1234?node_type=chitchat")
+    assert response.status_code == 200
+    assert captured["node_type"] == "chitchat"
+    assert response.json()["node_type"] == "chitchat"
+
+    # Valor inválido -> 422 de validação
+    response = client.get("/api/v1/prompt-manager/tenant/1234?node_type=nao_existe")
+    assert response.status_code == 422
 
 
 def test_returns_500_when_no_default_prompt_configured(monkeypatch):

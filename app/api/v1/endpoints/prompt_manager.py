@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 
 # Importa o método de conexão direto do seu módulo de banco
@@ -9,6 +11,7 @@ from modules.prompt_manager.prompt_manager_service import (
 from modules.tenant.tenant_service import TenantService
 from app.schemas.prompt_manager import (
     GuardrailCreateSchema,
+    NodeType,
     PromptCreateSchema,
     TenantPromptLinkSchema,
     TenantPromptOverviewResponse,
@@ -28,30 +31,45 @@ def create_guardrail(payload: GuardrailCreateSchema):
     service = PromptManagerService(get_db_connection)
     return service.create_guardrail(payload.titulo, payload.conteudo, payload.is_global)
 
-@router.get("/prompts")
-def get_prompts():
+@router.get(
+    "/prompts",
+    summary="Lista prompts, opcionalmente filtrados por node_type (operational, institutional ou chitchat)",
+)
+def get_prompts(node_type: Optional[NodeType] = None):
     service = PromptManagerService(get_db_connection)
-    return service.list_prompts()
+    return service.list_prompts(node_type=node_type)
 
-@router.post("/prompts")
+@router.post(
+    "/prompts",
+    summary="Cria um prompt para um node_type (padrão: operational)",
+)
 def create_prompt(payload: PromptCreateSchema):
     service = PromptManagerService(get_db_connection)
     return service.create_prompt_with_relations(
-        payload.titulo, payload.conteudo, payload.is_default, payload.guardrail_ids
+        payload.titulo, payload.conteudo, payload.is_default, payload.guardrail_ids,
+        node_type=payload.node_type,
     )
 
-@router.post("/link-tenant")
+@router.post(
+    "/link-tenant",
+    summary="Vincula um tenant a um prompt; o node_type do vínculo é o do prompt informado e não afeta "
+    "vínculos ativos de outros node_type do mesmo tenant",
+)
 def link_tenant(payload: TenantPromptLinkSchema):
     service = PromptManagerService(get_db_connection)
     return service.link_tenant_to_prompt(
         payload.tenant_id, payload.prompt_id, payload.custom_content_override
     )
-    
-@router.put("/prompts/{prompt_id}")
+
+@router.put(
+    "/prompts/{prompt_id}",
+    summary="Atualiza um prompt (substitui o estado completo, incluindo node_type)",
+)
 def update_prompt(prompt_id: str, payload: PromptCreateSchema):
     service = PromptManagerService(get_db_connection)
     updated_prompt = service.update_prompt_with_relations(
-        prompt_id, payload.titulo, payload.conteudo, payload.is_default, payload.guardrail_ids
+        prompt_id, payload.titulo, payload.conteudo, payload.is_default, payload.guardrail_ids,
+        node_type=payload.node_type,
     )
     if not updated_prompt:
         raise HTTPException(status_code=404, detail="Prompt não encontrado")
@@ -78,15 +96,15 @@ def update_guardrail(guardrail_id: str, payload: GuardrailCreateSchema):
 @router.get(
     "/tenant/{tenant_id}",
     response_model=TenantPromptOverviewResponse,
-    summary="Prompt e guardrails vinculados a um tenant (com fallback para o prompt padrão)",
+    summary="Prompt e guardrails vinculados a um tenant, para um node_type (com fallback em cascata)",
 )
-def get_tenant_prompt_details(tenant_id: str):
+def get_tenant_prompt_details(tenant_id: str, node_type: NodeType = "operational"):
     tenant_service = TenantService()
     if tenant_service.get_tenant(tenant_id) is None:
         raise HTTPException(status_code=404, detail="Tenant não encontrado")
 
     service = PromptManagerService(get_db_connection)
     try:
-        return service.get_tenant_prompt_details(tenant_id)
+        return service.get_tenant_prompt_details(tenant_id, node_type=node_type)
     except DefaultPromptNotConfiguredError as exc:
         raise HTTPException(status_code=500, detail=str(exc))

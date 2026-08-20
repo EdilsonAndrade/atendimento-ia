@@ -25,6 +25,9 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from modules.token.token_verify import verificar_token
 from app.core.limiter import limiter
+from infrastructure.connection import get_db_connection
+from modules.prompt_manager.prompt_manager_repository import PromptManagerRepository
+from prompts.load_prompt import CHITCHAT_PROMPT_PATH, GUARDRAIL_PATH
 # COMENTÁRIO: Carrega as variáveis declaradas no arquivo .env
 load_dotenv()
 
@@ -114,6 +117,27 @@ app.include_router(
 
 # Acopla todas as rotas centralizadas do roteador v1
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+
+@app.on_event("startup")
+def seed_node_type_prompts() -> None:
+    """EDI-42: garante o prompt padrão de chitchat e copia o institutional dos
+    tenants já configurados, uma única vez por subida do processo (idempotente —
+    ver PromptManagerRepository.seed_missing_node_prompts). Envolvido em
+    try/except para que uma falha de banco no boot não impeça a API de subir,
+    mesmo padrão já usado pelas demais inicializações globais deste projeto.
+    """
+    try:
+        chitchat_default_conteudo = CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8").format(
+            guardrails=GUARDRAIL_PATH.read_text(encoding="utf-8")
+        )
+        repository = PromptManagerRepository(get_db_connection)
+        repository.seed_missing_node_prompts(
+            chitchat_default_titulo="Chitchat - Padrão",
+            chitchat_default_conteudo=chitchat_default_conteudo,
+        )
+    except Exception as e:
+        print(f"⚠️ Alerta: Falha ao rodar o seed de prompts por node_type (EDI-42): {e}")
 
 
 # COMENTÁRIO: Lê as variáveis de ambiente com fallback para padrões seguros
