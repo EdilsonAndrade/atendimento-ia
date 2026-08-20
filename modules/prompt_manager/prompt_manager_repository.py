@@ -75,13 +75,25 @@ class PromptManagerRepository:
                     """, records)
 
     def sync_tenant_prompt(self, tenant_id: str, prompt_id: str, custom_override: Optional[str] = None):
-        """Associa um tenant a um prompt na tabela tenant_prompts."""
+        """Associa um tenant a um prompt na tabela tenant_prompts.
+
+        Garante que apenas um vínculo (prompt_id) fica ativo por tenant.
+        Desativa automaticamente vínculos antigos quando um novo é ativado.
+        """
         with self.get_connection() as conn:
             with conn.cursor() as cur:
+                # 1. Desativa todos os vínculos antigos do tenant (exceto o novo)
+                cur.execute("""
+                    UPDATE tenant_prompts
+                    SET is_active = FALSE, updated_at = NOW()
+                    WHERE tenant_id = %s AND prompt_id != %s
+                """, (tenant_id, prompt_id))
+
+                # 2. Ativa o novo vínculo (ou reativa se já foi vinculado antes)
                 cur.execute("""
                     INSERT INTO tenant_prompts (tenant_id, prompt_id, is_active, custom_content_override)
                     VALUES (%s, %s, TRUE, %s)
-                    ON CONFLICT (tenant_id, prompt_id) 
+                    ON CONFLICT (tenant_id, prompt_id)
                     DO UPDATE SET is_active = TRUE, custom_content_override = EXCLUDED.custom_content_override, updated_at = NOW()
                 """, (tenant_id, prompt_id, custom_override))
 
