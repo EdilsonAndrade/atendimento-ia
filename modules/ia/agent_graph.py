@@ -14,7 +14,7 @@ from modules.agendamento.agenda_tool import consultar_horarios_disponiveis
 from modules.agendamento.delete_agenda_tool import cancelar_agendamento
 from modules.agendamento.consulta_agenda_tool import consulta_agendamento
 from infrastructure.connection import DB_URI
-from prompts.load_prompt import carregar_operacional_prompt
+from prompts.load_prompt import carregar_operacional_prompt, carregar_guardrails
 from modules.agendamento.tools.google_calendario.agenda_tool import build_agendar_tool
 from modules.agendamento.tools.google_calendario.consulta_agenda_tool import build_consulta_tool
 from modules.agendamento.tools.google_calendario.delete_agenda_tool import build_delete_tool
@@ -270,10 +270,16 @@ def institutional_node(state: AgentState, config: RunnableConfig):
         elif msg.type == "ai" and not msg.content.startswith("Routing decision:"):
             historico_texto += f"Assistant: {msg.content}\n"
 
+    # Guardrails do tenant (vinculados no banco + is_global=TRUE, com fallback local)
+    # — mesma fonte usada pelo operational_node, garante recusa de piadas/off-topic
+    # também no fluxo institucional, que antes não tinha guardrail nenhum.
+    guardrails_text = carregar_guardrails(tenant_id)
+
     # 4. Prompt com RAG + Histórico de Conversa
     prompt_final = (
         f"You are an expert assistant for the business. Answer the user's question using the provided context below.\n"
         f"{GROUNDEDNESS_RULE}"
+        f"{guardrails_text}\n\n"
         f"You also have access to the conversation history with this user. Use it only for conversational continuity (e.g., what "
         f"they already asked), never as a source of factual business information.\n"
         f"CRITICAL GUARDRAIL: If the answer is not in the context, state clearly that you do not have that information.\n"

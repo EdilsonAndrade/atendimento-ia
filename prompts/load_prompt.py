@@ -8,13 +8,35 @@ PROMPT_PATH = PROMPTS_DIR / "operactional_prompt.md"
 GUARDRAIL_PATH = PROMPTS_DIR / "guardrails.md"
 
 
+def carregar_guardrails(tenant_id):
+    """
+    Resolve o texto de guardrails para o tenant: se houver prompt vinculado no
+    banco, usa os guardrails dessa tabela N:N + os is_global=TRUE. Caso
+    contrário (sem vínculo ou erro de conexão), usa o arquivo local guardrails.md.
+    Reaproveitada tanto pelo fluxo operacional quanto pelo institucional.
+    """
+    try:
+        service = PromptManagerService(get_db_connection)
+        active_prompt = service.repository.get_active_prompt_by_tenant(tenant_id)
+
+        if not active_prompt:
+            return GUARDRAIL_PATH.read_text(encoding="utf-8")
+
+        guardrails_db_list = service.repository.get_guardrails_by_prompt(active_prompt["id"])
+        return "\n\n".join([g["conteudo"] for g in guardrails_db_list])
+
+    except Exception as e:
+        print(f"[WARN] Falha ao carregar guardrails do banco para tenant {tenant_id}: {e}. Usando fallback local.")
+        return GUARDRAIL_PATH.read_text(encoding="utf-8")
+
+
 def _carregar_fallback_local(tenant_id, tabela_calendario_str, hora_atual_str, data_hoje_iso, contexto_formatado):
     """
     Função auxiliar interna para carregar os arquivos .md locais
     caso o tenant não possua configuração no banco de dados.
     """
     guardrails_text_local = GUARDRAIL_PATH.read_text(encoding="utf-8")
-    
+
     with open(PROMPT_PATH, "r", encoding="utf-8") as f:
         template_local = f.read()
 
