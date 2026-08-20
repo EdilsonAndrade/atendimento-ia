@@ -16,4 +16,7 @@ specs/001-admin-tenant-management/plan.md
    4. /speckit-implement
 4. O nome da branch sempre levará o NOME da ISSUE do Linear, se não houver, pergunte.
 5. CASO não haja ticket no linear, atuar pontualmente após entendimento
+
+## MANDATORY
+1. WHEN you want to execute tests MUST pass the command to the user can test.
 <!-- SPECKIT END -->

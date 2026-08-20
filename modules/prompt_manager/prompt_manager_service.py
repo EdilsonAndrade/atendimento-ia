@@ -100,6 +100,7 @@ class PromptManagerService:
                 "prompt_conteudo": details["prompt_conteudo_base"],
                 "custom_content_override": details["custom_content_override"],
                 "is_default_prompt": False,
+                "is_active": details["is_active"],
                 "guardrails_associados": self._stringify_guardrail_ids(details["guardrails_associados"]),
             }
 
@@ -116,6 +117,7 @@ class PromptManagerService:
             "prompt_conteudo": default_prompt["conteudo"],
             "custom_content_override": None,
             "is_default_prompt": True,
+            "is_active": True,
             "guardrails_associados": self._stringify_guardrail_ids(self.repository.get_global_guardrails()),
         }
 

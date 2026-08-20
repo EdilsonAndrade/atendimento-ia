@@ -57,6 +57,7 @@ def test_returns_custom_prompt_overview_when_link_exists(monkeypatch):
             "prompt_conteudo": "conteudo custom",
             "custom_content_override": None,
             "is_default_prompt": False,
+            "is_active": True,
             "guardrails_associados": [
                 {"id": "g1", "titulo": "Confirmação de agenda", "conteudo": "...", "is_global": False}
             ],
@@ -68,6 +69,7 @@ def test_returns_custom_prompt_overview_when_link_exists(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["is_default_prompt"] is False
+    assert body["is_active"] is True
     assert body["prompt_id"] == "p1"
 
 
@@ -82,6 +84,7 @@ def test_returns_default_prompt_fallback_when_no_link(monkeypatch):
             "prompt_conteudo": "conteudo padrão",
             "custom_content_override": None,
             "is_default_prompt": True,
+            "is_active": True,
             "guardrails_associados": [
                 {"id": "gG1", "titulo": "Guardrail Global 1", "conteudo": "...", "is_global": True}
             ],
@@ -93,6 +96,7 @@ def test_returns_default_prompt_fallback_when_no_link(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["is_default_prompt"] is True
+    assert body["is_active"] is True
     assert body["prompt_id"] == "dP"
 
 

@@ -32,4 +32,5 @@ class TenantPromptOverviewResponse(BaseModel):
     prompt_conteudo: str
     custom_content_override: Optional[str] = None
     is_default_prompt: bool
+    is_active: bool
     guardrails_associados: List[GuardrailAssociadoSchema]

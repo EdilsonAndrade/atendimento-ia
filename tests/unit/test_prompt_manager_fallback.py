@@ -35,6 +35,7 @@ def test_returns_custom_prompt_when_active_link_exists():
         "prompt_titulo": "Atendimento Barbearia",
         "prompt_conteudo_base": "conteudo custom",
         "custom_content_override": None,
+        "is_active": True,
         "guardrails_associados": [
             {"id": "g1", "titulo": "Confirmação de agenda", "conteudo": "...", "is_global": False}
         ],
@@ -44,6 +45,7 @@ def test_returns_custom_prompt_when_active_link_exists():
     result = service.get_tenant_prompt_details("1234")
 
     assert result["is_default_prompt"] is False
+    assert result["is_active"] is True
     assert result["prompt_id"] == "p1"
     assert result["prompt_conteudo"] == "conteudo custom"
     assert result["guardrails_associados"] == tenant_details["guardrails_associados"]
@@ -57,6 +59,7 @@ def test_falls_back_to_default_prompt_when_no_active_link():
     result = service.get_tenant_prompt_details("5678")
 
     assert result["is_default_prompt"] is True
+    assert result["is_active"] is True
     assert result["prompt_id"] == "dP"
     assert result["prompt_conteudo"] == "conteudo padrão"
     assert result["custom_content_override"] is None
