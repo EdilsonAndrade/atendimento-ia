@@ -20,6 +20,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 # Copia o arquivo de dependências do Python
 COPY requirements.txt .
 
+# COMENTÁRIO: Instala o torch em build CPU-only (sem CUDA), pois a VM de produção
+# é ARM64 (Ampere Altra) sem GPU. Evita baixar libs nvidia-* (~2GB) desnecessárias.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 # Instala as dependências da aplicação
 RUN pip install --no-cache-dir -r requirements.txt
 

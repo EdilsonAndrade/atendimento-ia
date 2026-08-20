@@ -25,10 +25,11 @@ langgraph-checkpoint-postgres
 langsmith
 
 # Vetores, Embeddings & ML
+# COMENTÁRIO: torch é instalado separadamente no Dockerfile (build CPU-only),
+# pois a VM de produção é ARM64 sem GPU e o índice padrão do PyPI traz dependências CUDA desnecessárias
 openai
 sentence-transformers
 transformers
-torch
 
 # Utilitários & Arquivos
 pandas
