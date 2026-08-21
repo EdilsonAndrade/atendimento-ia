@@ -4,9 +4,6 @@ from pydantic import BaseModel, Field, ConfigDict
 from langchain.tools import tool
 from infrastructure.connection import DB_URI
 
-# Importa a função de inicialização do seu arquivo de booking
-from modules.agendamento.booking_tools import init_booking_table
-
 
 class DisponibilidadeInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -40,8 +37,7 @@ def consultar_horarios_disponiveis(
 
     try:
         print(f" -> [TOOL: consultar_horarios_disponiveis] Verificando agenda no Postgres para '{profissional}' em {data_agendamento}...")
-        init_booking_table()
-        
+
         # Query com LOWER/ILIKE para evitar divergência de maiúsculas/minúsculas
         search_query = """
             SELECT horario, servico, cliente_nome

@@ -5,43 +5,16 @@ NODE_TYPES = ("operational", "institutional", "chitchat")
 
 
 class PromptManagerRepository:
+    """Acesso às tabelas de prompts, guardrails e seus vínculos por tenant.
+
+    O schema (incluindo a coluna `node_type`, sua constraint de valores válidos e o
+    índice único parcial de prompt padrão por node_type) é garantido pelas migrations
+    em `migrations/` — ver EDI-37. Até então este repositório executava DDL idempotente
+    no início de cada método, ou seja, uma alteração de estrutura por requisição atendida.
+    """
+
     def __init__(self, get_connection_func):
         self.get_connection = get_connection_func
-
-    def ensure_node_type_schema(self):
-        """Adiciona a coluna node_type (e suas constraints) de forma idempotente.
-
-        Mesmo padrão de DDL idempotente já usado em init_thread_sessions_table()
-        (modules/ia/thread_session.py): este repositório não usa framework de
-        migração, então o schema é garantido no início de cada método que
-        depende de node_type, em vez do __init__ — construir o repositório não
-        deve, por si só, exigir uma conexão real de banco (ver testes unitários
-        que trocam .repository por um fake logo após instanciar o service).
-        """
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "ALTER TABLE prompts ADD COLUMN IF NOT EXISTS node_type TEXT NOT NULL DEFAULT 'operational'"
-                )
-                cur.execute(
-                    """
-                    DO $$
-                    BEGIN
-                        IF NOT EXISTS (
-                            SELECT 1 FROM pg_constraint WHERE conname = 'prompts_node_type_check'
-                        ) THEN
-                            ALTER TABLE prompts ADD CONSTRAINT prompts_node_type_check
-                                CHECK (node_type IN ('operational', 'institutional', 'chitchat'));
-                        END IF;
-                    END $$;
-                    """
-                )
-                cur.execute(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS prompts_one_default_per_node
-                    ON prompts (node_type) WHERE is_default = TRUE
-                    """
-                )
 
     # --- GUARDRAILS ---
     def get_all_guardrails(self) -> List[Dict[str, Any]]:
@@ -66,7 +39,6 @@ class PromptManagerRepository:
 
     # --- PROMPTS ---
     def get_all_prompts(self, node_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        self.ensure_node_type_schema()
         with self.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("""
@@ -91,7 +63,6 @@ class PromptManagerRepository:
                 return cur.fetchall()
 
     def create_prompt(self, titulo: str, conteudo: str, is_default: bool, node_type: str = "operational") -> Dict[str, Any]:
-        self.ensure_node_type_schema()
         with self.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("""
@@ -123,7 +94,6 @@ class PromptManagerRepository:
         novo é ativado — vínculos ativos de outros node_type (ex.: chitchat)
         não são afetados ao vincular um novo prompt operational (FR-009).
         """
-        self.ensure_node_type_schema()
         with self.get_connection() as conn:
             with conn.cursor() as cur:
                 # 1. Desativa vínculos antigos do tenant do MESMO node_type do prompt novo (exceto o novo)
@@ -148,7 +118,6 @@ class PromptManagerRepository:
     # --- RESOLUÇÃO DO PROMPT (RUNTIME DO AGENTE) ---
     def get_active_prompt_by_tenant(self, tenant_id: str, node_type: str = "operational") -> Optional[Dict[str, Any]]:
         """Busca o prompt associado e ativo para o tenant específico, no node_type pedido."""
-        self.ensure_node_type_schema()
         with self.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("""
@@ -178,7 +147,6 @@ class PromptManagerRepository:
         """Atualiza um prompt. PUT substitui o estado completo do recurso — assim como
         titulo/conteudo/is_default, node_type também é sempre o valor enviado pelo
         chamador (mesma convenção já usada pelos demais campos deste endpoint)."""
-        self.ensure_node_type_schema()
         with self.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("""
@@ -203,7 +171,6 @@ class PromptManagerRepository:
     def get_default_prompt(self, node_type: str = "operational") -> Optional[Dict[str, Any]]:
         """Busca o prompt marcado como padrão (is_default=TRUE) do node_type pedido,
         usado como fallback para tenants sem vínculo ativo nesse node_type."""
-        self.ensure_node_type_schema()
         with self.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 cur.execute("""
@@ -255,7 +222,6 @@ class PromptManagerRepository:
         Não duplica nada ao rodar novamente: tenants que já têm vínculo institutional (seedado antes ou
         configurado manualmente pelo admin) são ignorados; o prompt padrão de chitchat só é criado uma vez.
         """
-        self.ensure_node_type_schema()
 
         with self.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
@@ -323,7 +289,6 @@ class PromptManagerRepository:
     def get_tenant_prompt_details(self, tenant_id: str, node_type: str = "operational") -> Optional[Dict[str, Any]]:
         """Busca o prompt associado ao tenant (no node_type pedido) e a lista de
         guardrails vinculados a esse prompt."""
-        self.ensure_node_type_schema()
         with self.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
                 # 1. Pega os dados do vínculo do tenant com o prompt, para o node_type pedido

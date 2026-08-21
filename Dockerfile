@@ -33,8 +33,17 @@ COPY . .
 # Expõe a porta interna 8001
 EXPOSE 8001
 
-# COMENTÁRIO: Torna o script de inicialização executável
-RUN sed -i -e 's/\r$//' /app/start.sh && chmod +x /app/start.sh
+# COMENTÁRIO: Torna os scripts de inicialização executáveis.
+# O sed remove o CR do CRLF do Windows — sem ele o shell falha com "not found".
+RUN sed -i -e 's/\r$//' /app/start.sh /app/docker-entrypoint.sh \
+    && chmod +x /app/start.sh /app/docker-entrypoint.sh
+
+# COMENTÁRIO (EDI-37): o ENTRYPOINT aplica as migrations (alembic upgrade head) antes
+# de entregar o controle ao comando final. É obrigatório que esteja no ENTRYPOINT e não
+# no CMD: o docker-compose.yml de produção define `command: ["uvicorn", ...]`, que
+# substitui o CMD da imagem mas NÃO o ENTRYPOINT. Se uma migration falhar, o contêiner
+# morre aqui em vez de servir requisições contra um banco inconsistente.
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # Comando para iniciar a API (ajuste main:app conforme o seu arquivo principal Python)
 CMD ["/app/start.sh"]

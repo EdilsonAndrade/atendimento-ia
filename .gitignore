@@ -7,3 +7,6 @@ __pycache__/
 db/
 data/
 credentials.json
+.DS_Store
+Thumbs.db
+*.swp

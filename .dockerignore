@@ -4,3 +4,7 @@ db
 data
 .env
 credentials.json
+__pycache__
+.pytest_cache
+tests
+specs

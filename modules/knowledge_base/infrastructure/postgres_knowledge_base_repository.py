@@ -5,31 +5,15 @@ from psycopg.rows import dict_row
 from infrastructure.connection import get_db_connection
 from modules.knowledge_base.domain.knowledge_base_document import KnowledgeBaseDocument
 
-_TABLE_DDL = """
-CREATE TABLE IF NOT EXISTS tenant_knowledge_base (
-    tenant_id TEXT PRIMARY KEY,
-    content TEXT NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-"""
-
-
 class PostgresKnowledgeBaseRepository:
     """Implementa KnowledgeBaseRepositoryPort sobre a tabela tenant_knowledge_base.
 
-    A tabela é criada de forma idempotente (CREATE TABLE IF NOT EXISTS) na inicialização,
-    seguindo o mesmo padrão já usado por modules/ia/thread_session.py para chat_thread_sessions
-    — este projeto não tem um framework de migrations.
+    A tabela é criada pelas migrations em `migrations/` (EDI-37) — este repositório
+    assume que o schema já está correto quando a aplicação sobe.
     """
 
     def __init__(self, get_connection_func=get_db_connection):
         self.get_connection = get_connection_func
-        self._ensure_table()
-
-    def _ensure_table(self) -> None:
-        with self.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(_TABLE_DDL)
 
     def get(self, tenant_id: str) -> Optional[KnowledgeBaseDocument]:
         with self.get_connection() as conn:

@@ -20,22 +20,6 @@ from infrastructure.connection import DB_URI
 SESSION_IDLE_MINUTES = float(os.getenv("CHAT_SESSION_IDLE_MINUTES", "360"))
 
 
-def init_thread_sessions_table():
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS chat_thread_sessions (
-        base_thread_id VARCHAR(255) PRIMARY KEY,
-        active_thread_id VARCHAR(255) NOT NULL,
-        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-    """
-    try:
-        with psycopg.connect(DB_URI, autocommit=True) as conn:
-            with conn.cursor() as cur:
-                cur.execute(create_table_query)
-    except Exception as e:
-        print(f"⚠️ Erro ao inicializar tabela chat_thread_sessions no Postgres: {e}")
-
-
 def resolve_active_thread_id(base_thread_id: str, idle_minutes: float = SESSION_IDLE_MINUTES) -> str:
     """Retorna o thread_id real a ser usado pelo LangGraph para esta requisição.
 
@@ -43,8 +27,9 @@ def resolve_active_thread_id(base_thread_id: str, idle_minutes: float = SESSION_
     sessão é reaproveitado (mantendo contexto/nome/e-mail já informados). Se o gap desde
     a última mensagem ultrapassar `idle_minutes`, uma NOVA sessão é gerada automaticamente
     para esse `base_thread_id`, isolando o histórico e evitando datas relativas antigas.
+
+    A tabela `chat_thread_sessions` é criada pelas migrations em `migrations/` (EDI-37).
     """
-    init_thread_sessions_table()
     now = datetime.now(timezone.utc)
 
     try:

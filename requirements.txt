@@ -7,7 +7,10 @@ pydantic-settings>=2.2.0
 starlette
 
 # Banco de Dados & Async
+# COMENTÁRIO: sqlalchemy é usado APENAS pelo alembic (versionamento do schema).
+# Todas as consultas do projeto continuam em psycopg puro — ver specs/004-alembic-migrations/.
 sqlalchemy>=2.0.0
+alembic>=1.13
 psycopg[binary]>=3.1.0
 psycopg-pool
 

@@ -20,44 +20,13 @@ class BookingInput(BaseModel):
     data_agendamento: str = Field(..., alias="data", description="Data do agendamento no formato YYYY-MM-DD. SEMPRE calcule a partir da tabela CALENDAR REFERENCE do prompt, nunca invente ou reutilize uma data de exemplo.")
     horario: str = Field(..., alias="hora", description="Horário do agendamento no formato HH:MM (ex: '14:30')")
 
-def init_booking_table():
-    """
-    Garante que a tabela de agendamentos locais por tenant exista no PostgreSQL.
-    """
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS agendamentos (
-        id SERIAL PRIMARY KEY,
-        tenant_id VARCHAR(50) NOT NULL,
-        cliente_nome VARCHAR(100) NOT NULL,
-        cliente_email VARCHAR(100),
-        servico VARCHAR(100) NOT NULL,
-        profissional VARCHAR(100) NOT NULL,
-        email_profissional VARCHAR(100),
-        data_agendamento DATE NOT NULL,
-        horario TIME NOT NULL,
-        status VARCHAR(20) DEFAULT 'CONFIRMADO',
-        google_event_id VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        deleted_at TIMESTAMP DEFAULT NULL
-    );
-    """
-    connection_kwargs = {"autocommit": True, "prepare_threshold": 0}
-    try:
-        with psycopg.connect(DB_URI, **connection_kwargs) as conn:
-            with conn.cursor() as cur:
-                cur.execute(create_table_query)
-    except Exception as e:
-        print(f"⚠️ Erro ao inicializar tabela de agendamentos no Postgres: {e}")
-
-
 def real_time_available(
     tenant_id: str,
     profissional: str,
     data_agendamento: str,
     horario: str,
 ) -> str:
-    init_booking_table()
-    
+    # A tabela `agendamentos` é criada pelas migrations em `migrations/` (EDI-37).
     check_query = """
         SELECT id FROM agendamentos 
         WHERE tenant_id = %s 
