@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from infrastructure.connection import get_db_connection
 from modules.prompt_manager.prompt_manager_service import PromptManagerService
@@ -8,6 +9,87 @@ PROMPT_PATH = PROMPTS_DIR / "operactional_prompt.md"
 GUARDRAIL_PATH = PROMPTS_DIR / "guardrails.md"
 INSTITUTIONAL_PROMPT_PATH = PROMPTS_DIR / "institutional_prompt.md"
 CHITCHAT_PROMPT_PATH = PROMPTS_DIR / "chitchat_prompt.md"
+
+GUARDRAILS_PLACEHOLDER = "{guardrails}"
+
+# Casa apenas placeholders simples do tipo {nome_da_chave}. Chaves com qualquer
+# outro caractere (ex: o {"nome": "x"} de um exemplo JSON dentro do prompt) não
+# casam e ficam intactas no texto.
+_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+
+
+def _render_prompt(template: str, **valores) -> str:
+    """
+    Substitui os placeholders do template em UMA ÚNICA passada, em vez de usar
+    str.format(). Dois motivos, ambos vindos de bugs reais em produção:
+
+    1. str.format() levanta KeyError/IndexError para qualquer chave solta no
+       texto (um exemplo JSON, uma chave de template que o admin escreveu à mão).
+       Como o carregamento é envolvido em try/except, o prompt do tenant vinha do
+       banco e era descartado silenciosamente, caindo no fallback local sem aviso.
+       Aqui, placeholder desconhecido é preservado como texto, não quebra nada.
+
+    2. Passada única: o conteúdo injetado (guardrails, contexto RAG, histórico)
+       NÃO é reprocessado. Assim um guardrail cujo texto contenha "{guardrails}"
+       não dispara substituição em cascata.
+    """
+    def _substituir(match):
+        chave = match.group(1)
+        if chave in valores:
+            return str(valores[chave])
+        return match.group(0)  # placeholder desconhecido permanece literal
+
+    return _PLACEHOLDER_RE.sub(_substituir, template)
+
+
+def _montar_guardrails_str(guardrails_list) -> str:
+    """
+    Concatena o conteúdo dos guardrails vindos do banco aplicando duas limpezas:
+
+    - Remove o token "{guardrails}" de dentro do conteúdo. Guardrail é CONTEÚDO,
+      nunca template; quando o admin cola um prompt inteiro (incluindo a linha do
+      placeholder) dentro de um guardrail, esse token vazava literal para o prompt
+      final enviado ao LLM.
+    - Descarta guardrails com conteúdo repetido (comparando texto normalizado),
+      evitando que o mesmo bloco de regras apareça duas vezes quando um guardrail
+      global e um vinculado ao prompt carregam o mesmo texto.
+    """
+    vistos = set()
+    partes = []
+
+    for guardrail in guardrails_list:
+        conteudo = (guardrail.get("conteudo") or "").replace(GUARDRAILS_PLACEHOLDER, "").strip()
+        if not conteudo:
+            continue
+
+        chave_dedupe = " ".join(conteudo.split())
+        if chave_dedupe in vistos:
+            print(f"[WARN] Guardrail duplicado ignorado: {guardrail.get('titulo')!r}")
+            continue
+
+        vistos.add(chave_dedupe)
+        partes.append(conteudo)
+
+    return "\n\n".join(partes)
+
+
+def _aplicar_guardrails(template: str, guardrails_str: str, **valores) -> str:
+    """
+    Renderiza o template e garante que os guardrails sempre cheguem ao prompt final.
+
+    Se o template não tiver o placeholder {guardrails} (caso dos prompts gravados
+    no banco antes desta correção, que já vieram com os guardrails "assados" no
+    texto), os guardrails resolvidos são anexados ao final em vez de sumirem sem
+    aviso — que era o comportamento anterior do str.format().
+    """
+    tem_placeholder = GUARDRAILS_PLACEHOLDER in template
+    renderizado = _render_prompt(template, guardrails=guardrails_str, **valores)
+
+    if guardrails_str and not tem_placeholder:
+        print("[WARN] Prompt sem o placeholder {guardrails}; anexando os guardrails ao final.")
+        renderizado = f"{renderizado}\n\n{guardrails_str}"
+
+    return renderizado
 
 
 def carregar_guardrails(tenant_id):
@@ -25,7 +107,7 @@ def carregar_guardrails(tenant_id):
             return GUARDRAIL_PATH.read_text(encoding="utf-8")
 
         guardrails_db_list = service.repository.get_guardrails_by_prompt(active_prompt["id"])
-        return "\n\n".join([g["conteudo"] for g in guardrails_db_list])
+        return _montar_guardrails_str(guardrails_db_list)
 
     except Exception as e:
         print(f"[WARN] Falha ao carregar guardrails do banco para tenant {tenant_id}: {e}. Usando fallback local.")
@@ -42,8 +124,9 @@ def _carregar_fallback_local(tenant_id, tabela_calendario_str, hora_atual_str, d
     with open(PROMPT_PATH, "r", encoding="utf-8") as f:
         template_local = f.read()
 
-    return template_local.format(
-        guardrails=guardrails_text_local,
+    return _aplicar_guardrails(
+        template_local,
+        guardrails_text_local,
         tenant_id=tenant_id,
         tabela_calendario_str=tabela_calendario_str,
         hora_atual_str=hora_atual_str,
@@ -78,13 +161,14 @@ def carregar_operacional_prompt(tenant_id, tabela_calendario_str, hora_atual_str
         prompt_id = active_prompt["id"]
 
         guardrails_db_list = service.repository.get_guardrails_by_prompt(prompt_id)
-        
+
         # Concatena o texto de todos os guardrails vinculados a esse prompt
-        guardrails_str = "\n\n".join([g["conteudo"] for g in guardrails_db_list])
+        guardrails_str = _montar_guardrails_str(guardrails_db_list)
 
         # 4. Formata o template dinâmico retornado do banco
-        return prompt_template.format(
-            guardrails=guardrails_str,
+        return _aplicar_guardrails(
+            prompt_template,
+            guardrails_str,
             tenant_id=tenant_id,
             tabela_calendario_str=tabela_calendario_str,
             hora_atual_str=hora_atual_str,
@@ -121,14 +205,15 @@ def carregar_institutional_prompt(tenant_id, contexto_formatado, historico_texto
 
         if institutional_prompt:
             guardrails_db_list = service.repository.get_guardrails_by_prompt(institutional_prompt["id"])
-            guardrails_str = "\n\n".join([g["conteudo"] for g in guardrails_db_list])
+            guardrails_str = _montar_guardrails_str(guardrails_db_list)
             template = institutional_prompt["conteudo"]
         else:
             guardrails_str = carregar_guardrails(tenant_id)
             template = INSTITUTIONAL_PROMPT_PATH.read_text(encoding="utf-8")
 
-        return template.format(
-            guardrails=guardrails_str,
+        return _aplicar_guardrails(
+            template,
+            guardrails_str,
             tenant_id=tenant_id,
             contexto_formatado=contexto_formatado,
             historico_texto=historico_texto,
@@ -138,8 +223,9 @@ def carregar_institutional_prompt(tenant_id, contexto_formatado, historico_texto
     except Exception as e:
         print(f"[WARN] Falha ao carregar prompt institutional do banco para tenant {tenant_id}: {e}. Usando fallback local.")
         template = INSTITUTIONAL_PROMPT_PATH.read_text(encoding="utf-8")
-        return template.format(
-            guardrails=GUARDRAIL_PATH.read_text(encoding="utf-8"),
+        return _aplicar_guardrails(
+            template,
+            GUARDRAIL_PATH.read_text(encoding="utf-8"),
             tenant_id=tenant_id,
             contexto_formatado=contexto_formatado,
             historico_texto=historico_texto,
@@ -165,18 +251,19 @@ def carregar_chitchat_prompt(tenant_id):
 
         if chitchat_prompt:
             guardrails_db_list = service.repository.get_guardrails_by_prompt(chitchat_prompt["id"])
-            guardrails_str = "\n\n".join([g["conteudo"] for g in guardrails_db_list])
+            guardrails_str = _montar_guardrails_str(guardrails_db_list)
             template = chitchat_prompt["conteudo"]
         else:
             guardrails_str = GUARDRAIL_PATH.read_text(encoding="utf-8")
             template = CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8")
 
-        return template.format(guardrails=guardrails_str, tenant_id=tenant_id)
+        return _aplicar_guardrails(template, guardrails_str, tenant_id=tenant_id)
 
     except Exception as e:
         print(f"[WARN] Falha ao carregar prompt de chitchat do banco para tenant {tenant_id}: {e}. Usando fallback local.")
         template = CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8")
-        return template.format(
-            guardrails=GUARDRAIL_PATH.read_text(encoding="utf-8"),
+        return _aplicar_guardrails(
+            template,
+            GUARDRAIL_PATH.read_text(encoding="utf-8"),
             tenant_id=tenant_id,
         )
