@@ -5,7 +5,6 @@ import psycopg
 from infrastructure.connection import DB_URI
 
 
-print(f"Acessando o banco {DB_URI}")
 class BookingInput(BaseModel):
     # Permite aceitar tanto o nome do campo ('data_agendamento') quanto o alias ('data')
     model_config = ConfigDict(populate_by_name=True)
