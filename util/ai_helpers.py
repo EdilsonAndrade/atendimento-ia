@@ -2,7 +2,7 @@ import copy
 import re
 import unicodedata
 from typing import Sequence
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 
 # ============================================================================
@@ -81,11 +81,19 @@ NAME_RE = re.compile(r"(?:meu nome(?: completo)?\s*é|nome\s*[:\-]|sou)\s+([A-Za
 
 
 def extract_customer_profile(messages: Sequence[BaseMessage]) -> dict:
-    """Extrai dados de contato já informados ao longo da sessão."""
+    """
+    Extrai dados de contato já informados ao longo da sessão.
+
+    Considera EXCLUSIVAMENTE mensagens do cliente (HumanMessage). Nunca lê
+    AIMessage/ToolMessage: se a própria assistente disser "meu nome é Aline" ao
+    se apresentar, ou repetir um e-mail/telefone em uma resposta, esse texto
+    não pode contaminar o perfil do cliente (bug real: sessão chegou a herdar
+    "Nome: Aline" a partir da fala da própria IA).
+    """
     profile = {"nome": None, "email": None, "telefone": None}
 
     for msg in reversed(messages):
-        if isinstance(msg, ToolMessage):
+        if not isinstance(msg, HumanMessage):
             continue
 
         content = str(getattr(msg, "content", "") or "")
