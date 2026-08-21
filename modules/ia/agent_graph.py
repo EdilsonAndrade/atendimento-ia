@@ -36,6 +36,7 @@ from util.ai_helpers import (
     should_block_unverified_booking_response,
 )
 from util.time_helpers import get_tabela_dias
+from util.prompt_logger import log_llm_prompt
 # ============================================================================
 # ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
 # ============================================================================
@@ -152,7 +153,10 @@ def routing_agent(state: AgentState, config: RunnableConfig):
     e envio de histórico nativo para o LLM.
     """
     print("\n --- [NÓ: routing_agent] LLM analisando a intenção do usuário... ---")
-    
+
+    configurable = config.get("configurable", {})
+    tenant_id = configurable.get("tenant_id", "default_tenant")
+
     # 1. Separa histórico textual para o guardrail rápido
     historico_textual = [
         m for m in state["messages"]
@@ -199,7 +203,8 @@ def routing_agent(state: AgentState, config: RunnableConfig):
     )
     historico_sanitizado = sanitize_for_openai_strict_format(historico_bruto)
     mensagens_para_ia = [system_prompt] + historico_sanitizado
-    
+
+    log_llm_prompt("routing_agent", tenant_id, mensagens_para_ia)
     resposta = llm.invoke(mensagens_para_ia)
     decisao = resposta.content.strip().upper()
     
@@ -286,6 +291,7 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     # template (do banco ou local) não necessariamente a inclui, mesmo padrão do operational_node.
     prompt_final = f"{prompt_final}\n\n{GROUNDEDNESS_RULE}"
 
+    log_llm_prompt("institutional_node", tenant_id, prompt_final)
     resposta_ia = llm.invoke(prompt_final)
     print(" -> Resposta institucional formulada com sucesso!")
     return {"messages": [AIMessage(content=resposta_ia.content)]}
@@ -365,7 +371,8 @@ def operational_node(state: AgentState, config: RunnableConfig):
     all_active_tools = get_active_tools(tenant_id)
     
     llm_dynamic = llm.bind_tools(all_active_tools, parallel_tool_calls=False)
-    
+
+    log_llm_prompt("operational_node", tenant_id, mensagens_para_ia)
     resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
 
     if should_retry_availability_tool_call(state["messages"], resposta_ia):
@@ -379,6 +386,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
                 "Never claim a slot is occupied or available unless a tool has just succeeded."
             )),
         ] + historico_limitado
+        log_llm_prompt("operational_node.retry_availability", tenant_id, retry_messages)
         resposta_ia = llm_dynamic.invoke(retry_messages)
 
     if should_retry_booking_tool_call(state["messages"], resposta_ia):
@@ -394,6 +402,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
             )),
             SystemMessage(content=build_booking_retry_context_block(state["messages"], profile)),
         ] + historico_limitado
+        log_llm_prompt("operational_node.retry_booking", tenant_id, retry_messages)
         resposta_ia = llm_dynamic.invoke(retry_messages)
 
     # BLINDAGEM: Se o modelo ignorar a instrução do prompt e ainda assim mandar várias
@@ -473,6 +482,7 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
     mensagens_para_ia = [system_prompt] + historico_sanitizado
     
     try:
+        log_llm_prompt("chitchat_node", tenant_id, mensagens_para_ia)
         resposta_ia = llm.invoke(mensagens_para_ia)
         print(" -> Resposta casual/guardrail gerada com sucesso!")
         return {"messages": [AIMessage(content=resposta_ia.content)]}
