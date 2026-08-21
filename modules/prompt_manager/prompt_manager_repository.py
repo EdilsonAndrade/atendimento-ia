@@ -235,6 +235,14 @@ class PromptManagerRepository:
                 cur.execute("DELETE FROM prompts WHERE id = %s", (prompt_id,))
                 return cur.rowcount > 0
 
+    def delete_guardrail(self, guardrail_id: str) -> bool:
+        """Remove um guardrail e seus vínculos (prompt_guardrails)."""
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM prompt_guardrails WHERE guardrail_id = %s", (guardrail_id,))
+                cur.execute("DELETE FROM guardrails WHERE id = %s", (guardrail_id,))
+                return cur.rowcount > 0
+
     def seed_missing_node_prompts(self, chitchat_default_titulo: str, chitchat_default_conteudo: str) -> None:
         """Seed idempotente (User Story 3 / research.md R5), roda com segurança em toda inicialização:
 

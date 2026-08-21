@@ -93,6 +93,13 @@ def update_guardrail(guardrail_id: str, payload: GuardrailCreateSchema):
         raise HTTPException(status_code=404, detail="Guardrail não encontrado")
     return updated_guardrail
 
+@router.delete("/guardrails/{guardrail_id}", status_code=204)
+def delete_guardrail(guardrail_id: str):
+    service = PromptManagerService(get_db_connection)
+    deleted = service.delete_guardrail(guardrail_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Guardrail não encontrado")
+
 @router.get(
     "/tenant/{tenant_id}",
     response_model=TenantPromptOverviewResponse,

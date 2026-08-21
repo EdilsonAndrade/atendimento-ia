@@ -17,6 +17,9 @@ class PromptManagerService:
     def create_guardrail(self, titulo: str, conteudo: str, is_global: bool = False):
         return self.repository.create_guardrail(titulo, conteudo, is_global)
 
+    def delete_guardrail(self, guardrail_id: str) -> bool:
+        return self.repository.delete_guardrail(guardrail_id)
+
     def list_prompts(self, node_type: Optional[str] = None):
         return self.repository.get_all_prompts(node_type=node_type)
 
