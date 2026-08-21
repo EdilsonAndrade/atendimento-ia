@@ -27,7 +27,7 @@ from modules.token.token_verify import verificar_token
 from app.core.limiter import limiter
 from infrastructure.connection import get_db_connection
 from modules.prompt_manager.prompt_manager_repository import PromptManagerRepository
-from prompts.load_prompt import CHITCHAT_PROMPT_PATH, GUARDRAIL_PATH
+from prompts.load_prompt import CHITCHAT_PROMPT_PATH
 # COMENTÁRIO: Carrega as variáveis declaradas no arquivo .env
 load_dotenv()
 
@@ -126,11 +126,17 @@ def seed_node_type_prompts() -> None:
     ver PromptManagerRepository.seed_missing_node_prompts). Envolvido em
     try/except para que uma falha de banco no boot não impeça a API de subir,
     mesmo padrão já usado pelas demais inicializações globais deste projeto.
+
+    IMPORTANTE: se já existir um prompt padrão de chitchat no banco,
+    seed_missing_node_prompts() não grava nada — o conteúdo abaixo só é usado
+    na primeira vez (banco vazio). Por isso o template é gravado CRU, com o
+    placeholder "{guardrails}" intacto (sem .format() aqui): assim
+    carregar_chitchat_prompt() consegue injetar dinamicamente os guardrails
+    vinculados a esse prompt no banco a cada chamada, em vez de reaproveitar
+    um texto congelado do guardrails.md local.
     """
     try:
-        chitchat_default_conteudo = CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8").format(
-            guardrails=GUARDRAIL_PATH.read_text(encoding="utf-8")
-        )
+        chitchat_default_conteudo = CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8")
         repository = PromptManagerRepository(get_db_connection)
         repository.seed_missing_node_prompts(
             chitchat_default_titulo="Chitchat - Padrão",
