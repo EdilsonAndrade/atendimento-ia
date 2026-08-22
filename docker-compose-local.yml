@@ -8,6 +8,8 @@ services:
         # COMENTÁRIO: O Compose lê os valores injetados pelo comando no terminal
         - NEXT_PUBLIC_PYTHON_BACKEND_URL=${NEXT_PUBLIC_PYTHON_BACKEND_URL:-http://localhost:8001}
         - NEXT_PUBLIC_TENANT_ID=${NEXT_PUBLIC_TENANT_ID:-marcelo}
+        - NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL:-https://interasisai.com.br}
+        - NEXT_PUBLIC_ENABLE_AUDIO=${NEXT_PUBLIC_ENABLE_AUDIO:-false}
     restart: always
     ports:
       - "3001:3001"

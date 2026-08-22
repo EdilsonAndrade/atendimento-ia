@@ -87,6 +87,7 @@ def test_cadastro_valido_retorna_o_tenant():
             "name": "Acme Ltda",
             "google_calendar_id": "acme@group.calendar.google.com",
             "allowed_domains": ["acme.com"],
+            "scheduling_enabled": True,
             "created_at": datetime(2026, 8, 22, 10, 0, 0),
             "updated_at": None,
             "deleted_at": None,

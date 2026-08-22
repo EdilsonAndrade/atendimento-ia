@@ -52,7 +52,7 @@ def make_repository(monkeypatch, rows, count=None):
 
 
 def test_list_tenants_maps_rows_to_dicts(monkeypatch):
-    rows = [("1234", "Barbearia Central", "cal@x", ["barbeariacentral.com.br"], None, None)]
+    rows = [("1234", "Barbearia Central", "cal@x", ["barbeariacentral.com.br"], True, None, None)]
     repo, _ = make_repository(monkeypatch, rows)
 
     result = repo.list_tenants(None)
@@ -63,6 +63,7 @@ def test_list_tenants_maps_rows_to_dicts(monkeypatch):
             "name": "Barbearia Central",
             "google_calendar_id": "cal@x",
             "allowed_domains": ["barbeariacentral.com.br"],
+            "scheduling_enabled": True,
             "created_at": None,
             "updated_at": None,
         }

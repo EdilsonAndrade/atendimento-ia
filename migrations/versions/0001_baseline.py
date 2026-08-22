@@ -76,7 +76,7 @@ def upgrade() -> None:
     # --- tabelas --------------------------------------------------------------
     op.execute(
         """
-        CREATE TABLE public.tenants (
+        CREATE TABLE IF NOT EXISTS public.tenants (
             id character varying(50) NOT NULL,
             name character varying(255) NOT NULL,
             google_calendar_id character varying(255),
@@ -90,7 +90,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE TABLE public.prompts (
+        CREATE TABLE IF NOT EXISTS public.prompts (
             id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
             titulo character varying(150) NOT NULL,
             conteudo text NOT NULL,
@@ -105,7 +105,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE TABLE public.guardrails (
+        CREATE TABLE IF NOT EXISTS public.guardrails (
             id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
             titulo character varying(150) NOT NULL,
             conteudo text NOT NULL,
@@ -118,7 +118,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE TABLE public.prompt_guardrails (
+        CREATE TABLE IF NOT EXISTS public.prompt_guardrails (
             prompt_id uuid NOT NULL,
             guardrail_id uuid NOT NULL,
             created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
@@ -128,7 +128,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE TABLE public.tenant_prompts (
+        CREATE TABLE IF NOT EXISTS public.tenant_prompts (
             id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
             tenant_id character varying(100) NOT NULL,
             prompt_id uuid NOT NULL,
@@ -142,7 +142,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE TABLE public.whatsapp_instances (
+        CREATE TABLE IF NOT EXISTS public.whatsapp_instances (
             id uuid DEFAULT gen_random_uuid() NOT NULL,
             tenant_id character varying(50) NOT NULL,
             instance_name character varying(100) NOT NULL,
@@ -157,7 +157,7 @@ def upgrade() -> None:
     # ATENÇÃO: created_at/deleted_at SEM fuso horário — divergência real de produção.
     op.execute(
         """
-        CREATE TABLE public.agendamentos (
+        CREATE TABLE IF NOT EXISTS public.agendamentos (
             id integer NOT NULL,
             tenant_id character varying(50) NOT NULL,
             cliente_nome character varying(100) NOT NULL,
@@ -177,7 +177,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE SEQUENCE public.agendamentos_id_seq
+        CREATE SEQUENCE IF NOT EXISTS public.agendamentos_id_seq
             AS integer
             START WITH 1
             INCREMENT BY 1
@@ -196,7 +196,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE TABLE public.chat_thread_sessions (
+        CREATE TABLE IF NOT EXISTS public.chat_thread_sessions (
             base_thread_id character varying(255) NOT NULL,
             active_thread_id character varying(255) NOT NULL,
             last_seen_at timestamp with time zone DEFAULT now() NOT NULL
@@ -206,7 +206,7 @@ def upgrade() -> None:
 
     op.execute(
         """
-        CREATE TABLE public.tenant_knowledge_base (
+        CREATE TABLE IF NOT EXISTS public.tenant_knowledge_base (
             tenant_id text NOT NULL,
             content text NOT NULL,
             updated_at timestamp with time zone DEFAULT now() NOT NULL
@@ -214,108 +214,103 @@ def upgrade() -> None:
         """
     )
 
-    # --- chaves primárias -----------------------------------------------------
-    op.execute(
-        "ALTER TABLE ONLY public.tenants ADD CONSTRAINT tenants_pkey PRIMARY KEY (id)"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.prompts ADD CONSTRAINT prompts_pkey PRIMARY KEY (id)"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.guardrails "
-        "ADD CONSTRAINT guardrails_pkey PRIMARY KEY (id)"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.prompt_guardrails "
-        "ADD CONSTRAINT prompt_guardrails_pkey PRIMARY KEY (prompt_id, guardrail_id)"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.tenant_prompts "
-        "ADD CONSTRAINT tenant_prompts_pkey PRIMARY KEY (id)"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.whatsapp_instances "
-        "ADD CONSTRAINT whatsapp_instances_pkey PRIMARY KEY (id)"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.agendamentos "
-        "ADD CONSTRAINT agendamentos_pkey PRIMARY KEY (id)"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.chat_thread_sessions "
-        "ADD CONSTRAINT chat_thread_sessions_pkey PRIMARY KEY (base_thread_id)"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.tenant_knowledge_base "
-        "ADD CONSTRAINT tenant_knowledge_base_pkey PRIMARY KEY (tenant_id)"
-    )
+    # --- chaves primárias, restrições e FKs (idempotente via information_schema) --------
+    op.execute("""
+    DO $$
+    BEGIN
+        -- Chaves primárias (verifica na information_schema antes de adicionar)
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='tenants' AND constraint_name='tenants_pkey') THEN
+            ALTER TABLE ONLY public.tenants ADD CONSTRAINT tenants_pkey PRIMARY KEY (id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='prompts' AND constraint_name='prompts_pkey') THEN
+            ALTER TABLE ONLY public.prompts ADD CONSTRAINT prompts_pkey PRIMARY KEY (id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='guardrails' AND constraint_name='guardrails_pkey') THEN
+            ALTER TABLE ONLY public.guardrails ADD CONSTRAINT guardrails_pkey PRIMARY KEY (id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='prompt_guardrails' AND constraint_name='prompt_guardrails_pkey') THEN
+            ALTER TABLE ONLY public.prompt_guardrails ADD CONSTRAINT prompt_guardrails_pkey PRIMARY KEY (prompt_id, guardrail_id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='tenant_prompts' AND constraint_name='tenant_prompts_pkey') THEN
+            ALTER TABLE ONLY public.tenant_prompts ADD CONSTRAINT tenant_prompts_pkey PRIMARY KEY (id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='whatsapp_instances' AND constraint_name='whatsapp_instances_pkey') THEN
+            ALTER TABLE ONLY public.whatsapp_instances ADD CONSTRAINT whatsapp_instances_pkey PRIMARY KEY (id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='agendamentos' AND constraint_name='agendamentos_pkey') THEN
+            ALTER TABLE ONLY public.agendamentos ADD CONSTRAINT agendamentos_pkey PRIMARY KEY (id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='chat_thread_sessions' AND constraint_name='chat_thread_sessions_pkey') THEN
+            ALTER TABLE ONLY public.chat_thread_sessions ADD CONSTRAINT chat_thread_sessions_pkey PRIMARY KEY (base_thread_id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='tenant_knowledge_base' AND constraint_name='tenant_knowledge_base_pkey') THEN
+            ALTER TABLE ONLY public.tenant_knowledge_base ADD CONSTRAINT tenant_knowledge_base_pkey PRIMARY KEY (tenant_id);
+        END IF;
 
-    # --- restrições de unicidade ---------------------------------------------
-    op.execute(
-        "ALTER TABLE ONLY public.tenant_prompts "
-        "ADD CONSTRAINT unique_active_tenant_prompt UNIQUE (tenant_id, prompt_id)"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.whatsapp_instances "
-        "ADD CONSTRAINT whatsapp_instances_instance_name_key UNIQUE (instance_name)"
-    )
+        -- Restrições de unicidade
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='tenant_prompts' AND constraint_name='unique_active_tenant_prompt') THEN
+            ALTER TABLE ONLY public.tenant_prompts ADD CONSTRAINT unique_active_tenant_prompt UNIQUE (tenant_id, prompt_id);
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='whatsapp_instances' AND constraint_name='whatsapp_instances_instance_name_key') THEN
+            ALTER TABLE ONLY public.whatsapp_instances ADD CONSTRAINT whatsapp_instances_instance_name_key UNIQUE (instance_name);
+        END IF;
+
+        -- Chaves estrangeiras
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='prompt_guardrails' AND constraint_name='prompt_guardrails_prompt_id_fkey') THEN
+            ALTER TABLE ONLY public.prompt_guardrails ADD CONSTRAINT prompt_guardrails_prompt_id_fkey FOREIGN KEY (prompt_id) REFERENCES public.prompts(id) ON DELETE CASCADE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='prompt_guardrails' AND constraint_name='prompt_guardrails_guardrail_id_fkey') THEN
+            ALTER TABLE ONLY public.prompt_guardrails ADD CONSTRAINT prompt_guardrails_guardrail_id_fkey FOREIGN KEY (guardrail_id) REFERENCES public.guardrails(id) ON DELETE CASCADE;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE table_name='tenant_prompts' AND constraint_name='tenant_prompts_prompt_id_fkey') THEN
+            ALTER TABLE ONLY public.tenant_prompts ADD CONSTRAINT tenant_prompts_prompt_id_fkey FOREIGN KEY (prompt_id) REFERENCES public.prompts(id) ON DELETE CASCADE;
+        END IF;
+    END $$;
+    """)
 
     # --- índices --------------------------------------------------------------
     op.execute(
-        "CREATE INDEX idx_guardrails_is_global ON public.guardrails USING btree (is_global)"
+        "CREATE INDEX IF NOT EXISTS idx_guardrails_is_global ON public.guardrails USING btree (is_global)"
     )
     op.execute(
-        "CREATE INDEX idx_prompts_is_default ON public.prompts USING btree (is_default)"
+        "CREATE INDEX IF NOT EXISTS idx_prompts_is_default ON public.prompts USING btree (is_default)"
     )
     op.execute(
-        "CREATE INDEX idx_tenant_prompts_lookup "
+        "CREATE INDEX IF NOT EXISTS idx_tenant_prompts_lookup "
         "ON public.tenant_prompts USING btree (tenant_id, is_active)"
     )
     op.execute(
-        "CREATE INDEX idx_whatsapp_instances_name "
+        "CREATE INDEX IF NOT EXISTS idx_whatsapp_instances_name "
         "ON public.whatsapp_instances USING btree (instance_name)"
     )
     op.execute(
-        "CREATE INDEX idx_whatsapp_instances_tenant "
+        "CREATE INDEX IF NOT EXISTS idx_whatsapp_instances_tenant "
         "ON public.whatsapp_instances USING btree (tenant_id)"
     )
     # Garante no máximo UM prompt padrão por node_type (EDI-42).
     op.execute(
-        "CREATE UNIQUE INDEX prompts_one_default_per_node "
+        "CREATE UNIQUE INDEX IF NOT EXISTS prompts_one_default_per_node "
         "ON public.prompts USING btree (node_type) WHERE (is_default = true)"
     )
 
     # --- gatilhos de updated_at ----------------------------------------------
     # tenants NÃO tem gatilho equivalente em produção — reproduzido como está.
+    op.execute("DROP TRIGGER IF EXISTS update_prompts_modtime ON public.prompts")
     op.execute(
         "CREATE TRIGGER update_prompts_modtime BEFORE UPDATE ON public.prompts "
         "FOR EACH ROW EXECUTE FUNCTION public.update_timestamp_column()"
     )
+    op.execute("DROP TRIGGER IF EXISTS update_guardrails_modtime ON public.guardrails")
     op.execute(
         "CREATE TRIGGER update_guardrails_modtime BEFORE UPDATE ON public.guardrails "
         "FOR EACH ROW EXECUTE FUNCTION public.update_timestamp_column()"
     )
+    op.execute("DROP TRIGGER IF EXISTS update_tenant_prompts_modtime ON public.tenant_prompts")
     op.execute(
         "CREATE TRIGGER update_tenant_prompts_modtime BEFORE UPDATE ON public.tenant_prompts "
         "FOR EACH ROW EXECUTE FUNCTION public.update_timestamp_column()"
     )
 
-    # --- chaves estrangeiras --------------------------------------------------
-    op.execute(
-        "ALTER TABLE ONLY public.prompt_guardrails "
-        "ADD CONSTRAINT prompt_guardrails_prompt_id_fkey "
-        "FOREIGN KEY (prompt_id) REFERENCES public.prompts(id) ON DELETE CASCADE"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.prompt_guardrails "
-        "ADD CONSTRAINT prompt_guardrails_guardrail_id_fkey "
-        "FOREIGN KEY (guardrail_id) REFERENCES public.guardrails(id) ON DELETE CASCADE"
-    )
-    op.execute(
-        "ALTER TABLE ONLY public.tenant_prompts "
-        "ADD CONSTRAINT tenant_prompts_prompt_id_fkey "
-        "FOREIGN KEY (prompt_id) REFERENCES public.prompts(id) ON DELETE CASCADE"
-    )
 
 
 def downgrade() -> None:

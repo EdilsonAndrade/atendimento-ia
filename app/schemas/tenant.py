@@ -24,11 +24,25 @@ class TenantCreate(BaseModel):
         min_length=1,
         description="ID do prompt (node_type='operational') a ser vinculado ao tenant na criação.",
     )
-    
+    # Decide se o agente recebe tools de agendamento (agendar/consultar/cancelar)
+    # para este tenant. Antes, isso era um efeito colateral de ter (ou não)
+    # google_calendar_id preenchido: sem calendário, o tenant ainda assim recebia
+    # as tools internas (static_tools), mesmo tendo um prompt puramente
+    # institucional. Default TRUE para não quebrar o fluxo de cadastro atual —
+    # tenants sem negócio de agendamento (ex: institucional puro) devem desmarcar.
+    scheduling_enabled: bool = Field(
+        True,
+        description="Se TRUE, o agente oferece tools de agendamento (agendar/consultar/cancelar) a este tenant.",
+    )
+
 class TenantUpdate(BaseModel):
     name: str = Field(..., description="O nome do tenant.")
     google_calendar_id: str = Field(..., description="O ID do calendário do Google associado ao tenant.")
     allowed_domains: list[str] = Field(..., description="Lista de domínios autorizados para o tenant.")
+    scheduling_enabled: bool = Field(
+        True,
+        description="Se TRUE, o agente oferece tools de agendamento (agendar/consultar/cancelar) a este tenant.",
+    )
 
 class TenantResponse(BaseModel):
     id: str = Field(..., description="O ID do tenant.")
@@ -38,6 +52,7 @@ class TenantResponse(BaseModel):
     updated_at: datetime | None = Field(None, description="Data e hora da última atualização do tenant no formato ISO 8601.")
     allowed_domains: list[str] = Field(..., description="Lista de domínios autorizados para o tenant.")
     deleted_at: datetime | None = Field(None, description="Data e hora da exclusão do tenant no formato ISO 8601, se aplicável.")
+    scheduling_enabled: bool = Field(..., description="Se TRUE, o agente oferece tools de agendamento a este tenant.")
 
 
 class DeleteResponse(BaseModel):

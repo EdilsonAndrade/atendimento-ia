@@ -30,6 +30,7 @@ def test_search_returns_matching_tenants():
                 "name": "Barbearia Central",
                 "google_calendar_id": "cal@x",
                 "allowed_domains": ["barbeariacentral.com.br"],
+                "scheduling_enabled": True,
                 "created_at": "2026-01-10T12:00:00Z",
                 "updated_at": None,
             }

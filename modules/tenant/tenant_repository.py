@@ -18,12 +18,18 @@ class TenantRepository:
     def create_tenant(self, tenant_data) -> dict:
         # Logic to create a new tenant in the database
         create_query = """
-        INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, created_at)
-        VALUES (%s, %s, %s, %s, NOW())
-        RETURNING id, name, google_calendar_id, allowed_domains, created_at;
+        INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at)
+        VALUES (%s, %s, %s, %s, %s, NOW())
+        RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at;
         """
         cursor = self.db_connection.cursor()
-        cursor.execute(create_query, (tenant_data['tenant_id'], tenant_data['name'], tenant_data['google_calendar_id'], tenant_data['allowed_domains']))
+        cursor.execute(create_query, (
+            tenant_data['tenant_id'],
+            tenant_data['name'],
+            tenant_data['google_calendar_id'],
+            tenant_data['allowed_domains'],
+            tenant_data.get('scheduling_enabled', True),
+        ))
         new_tenant = cursor.fetchone()
         self._commit()
         cursor.close()
@@ -33,7 +39,8 @@ class TenantRepository:
             'name': new_tenant[1],
             'google_calendar_id': new_tenant[2],
             'allowed_domains': new_tenant[3],
-            'created_at': new_tenant[4]
+            'scheduling_enabled': new_tenant[4],
+            'created_at': new_tenant[5]
         }
 
     def create_tenant_with_prompt(self, tenant_data, prompt_id) -> dict:
@@ -55,15 +62,16 @@ class TenantRepository:
         try:
             cursor.execute(
                 """
-                INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, created_at)
-                VALUES (%s, %s, %s, %s, NOW())
-                RETURNING id, name, google_calendar_id, allowed_domains, created_at;
+                INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at;
                 """,
                 (
                     tenant_data['tenant_id'],
                     tenant_data['name'],
                     tenant_data['google_calendar_id'],
                     tenant_data['allowed_domains'],
+                    tenant_data.get('scheduling_enabled', True),
                 ),
             )
             new_tenant = cursor.fetchone()
@@ -96,7 +104,7 @@ class TenantRepository:
 
     def get_tenant(self, tenant_id) -> dict:
         # Logic to retrieve a tenant by ID from the database
-        get_query = "SELECT id, name, google_calendar_id, allowed_domains, created_at FROM tenants WHERE id = %s;"
+        get_query = "SELECT id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at FROM tenants WHERE id = %s;"
         cursor = self.db_connection.cursor()
         cursor.execute(get_query, (tenant_id,))
         tenant = cursor.fetchone()
@@ -107,20 +115,27 @@ class TenantRepository:
                 'name': tenant[1],
                 'google_calendar_id': tenant[2],
                 'allowed_domains': tenant[3],
-                'created_at': tenant[4]
+                'scheduling_enabled': tenant[4],
+                'created_at': tenant[5]
             }
         return None
 
     def update_tenant(self, tenant_id, tenant_data) -> dict | None:
         # Logic to update an existing tenant in the database
         update_query = """
-        UPDATE tenants  
-        SET name = %s, google_calendar_id = %s, allowed_domains = %s, updated_at = NOW()
+        UPDATE tenants
+        SET name = %s, google_calendar_id = %s, allowed_domains = %s, scheduling_enabled = %s, updated_at = NOW()
         WHERE id = %s
-        RETURNING id, name, google_calendar_id, allowed_domains, created_at, updated_at;
+        RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at, updated_at;
         """
         cursor = self.db_connection.cursor()
-        cursor.execute(update_query, (tenant_data['name'], tenant_data['google_calendar_id'], tenant_data['allowed_domains'], tenant_id))
+        cursor.execute(update_query, (
+            tenant_data['name'],
+            tenant_data['google_calendar_id'],
+            tenant_data['allowed_domains'],
+            tenant_data.get('scheduling_enabled', True),
+            tenant_id,
+        ))
         updated_tenant = cursor.fetchone()
         self._commit()
         cursor.close()
@@ -130,8 +145,9 @@ class TenantRepository:
                 'name': updated_tenant[1],
                 'google_calendar_id': updated_tenant[2],
                 'allowed_domains': updated_tenant[3],
-                'created_at': updated_tenant[4],
-                'updated_at': updated_tenant[5]
+                'scheduling_enabled': updated_tenant[4],
+                'created_at': updated_tenant[5],
+                'updated_at': updated_tenant[6]
             }
         return None
 
@@ -140,7 +156,7 @@ class TenantRepository:
         nome); com `term`, filtra por match parcial case-insensitive em id/name."""
         if term:
             query = """
-            SELECT id, name, google_calendar_id, allowed_domains, created_at, updated_at
+            SELECT id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at, updated_at
             FROM tenants
             WHERE id ILIKE %s OR name ILIKE %s
             ORDER BY name
@@ -150,7 +166,7 @@ class TenantRepository:
             params = (pattern, pattern, limit, offset)
         else:
             query = """
-            SELECT id, name, google_calendar_id, allowed_domains, created_at, updated_at
+            SELECT id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at, updated_at
             FROM tenants
             ORDER BY name
             LIMIT %s OFFSET %s;
@@ -167,8 +183,9 @@ class TenantRepository:
                 'name': row[1],
                 'google_calendar_id': row[2],
                 'allowed_domains': row[3],
-                'created_at': row[4],
-                'updated_at': row[5],
+                'scheduling_enabled': row[4],
+                'created_at': row[5],
+                'updated_at': row[6],
             }
             for row in rows
         ]

@@ -29,11 +29,6 @@ from langchain_core.messages import trim_messages
 from util.ai_helpers import (
     extract_customer_profile,
     build_customer_context_block,
-    build_booking_retry_context_block,
-    should_block_unverified_availability_response,
-    should_retry_availability_tool_call,
-    should_retry_booking_tool_call,
-    should_block_unverified_booking_response,
 )
 from util.time_helpers import get_tabela_dias
 from util.prompt_logger import log_llm_prompt
@@ -55,6 +50,21 @@ GROUNDEDNESS_RULE = (
     "a business name, service, or professional that is not explicitly present in that context — including generic examples "
     "like 'barbearia', 'André', or any other placeholder business. If the conversation history conflicts with the knowledge "
     "base context, the knowledge base always wins — it is the current source of truth, the history may be stale.\n"
+)
+
+# Regra de integridade de agendamento, aplicada em cima do prompt operacional
+# SOMENTE quando o tenant tem agendamento habilitado (get_active_tools devolveu
+# tools de calendário). Substitui os guards antigos que inferiam por palavra
+# solta ("ocupado", "livre") na RESPOSTA do modelo — o que gerava falso positivo
+# em qualquer texto que mencionasse essas palavras fora de contexto de agenda
+# (ex.: "não tenho esse link disponível"). Aqui a política é declarativa e
+# condicionada à capacidade real do tenant, não a um casamento de substring.
+BOOKING_INTEGRITY_RULE = (
+    "BOOKING INTEGRITY RULE (CRITICAL): Never state that a time slot is busy, free, or already "
+    "booked, and never confirm that a booking was made, unless a calendar tool call has just "
+    "returned that result in this same turn. If the user asks about availability or wants to book, "
+    "call the appropriate tool before answering — never answer from memory, from the conversation "
+    "history, or from the knowledge base.\n"
 )
 
 # Instâncias globais dos serviços de infraestrutura.
@@ -127,10 +137,24 @@ def get_tenant_tools(tenant_id: str, tenant_service, calendar_service):
     ]
 
 def get_active_tools(tenant_id: str):
+    """Resolve as tools de agendamento do tenant a partir de uma capacidade
+    explícita (`scheduling_enabled`), não de um efeito colateral.
+
+    Antes, a ausência de `google_calendar_id` caía em `static_tools` — ou seja,
+    todo tenant recebia tools de agendamento por padrão, mesmo quem não tem
+    negócio de agendamento nenhum (ex: um tenant institucional puro). Isso é o
+    mesmo fail-open que o EDI-43 eliminou na resolução de prompt, só que em
+    tools. Agora quem decide é o campo do tenant: sem agendamento habilitado,
+    nenhuma tool de agendamento é oferecida ao modelo, ponto.
+    """
     tenant = tenant_service.get_tenant_by_id(tenant_id)
+    scheduling_enabled = bool(tenant.get("scheduling_enabled", True)) if tenant else True
     google_calendar_id = tenant.get("google_calendar_id") if tenant else None
 
-    if google_calendar_id:
+    if not scheduling_enabled:
+        active_tools = []
+        backend = "scheduling_disabled"
+    elif google_calendar_id:
         active_tools = get_tenant_tools(tenant_id, tenant_service, calendar_service)
         backend = "google_calendar"
     else:
@@ -139,7 +163,7 @@ def get_active_tools(tenant_id: str):
 
     print(
         f" -> [TOOL CONFIG] tenant_id={tenant_id} backend={backend} "
-        f"google_calendar_id={google_calendar_id!r} "
+        f"scheduling_enabled={scheduling_enabled} google_calendar_id={google_calendar_id!r} "
         f"tools={[tool.name for tool in active_tools]}"
     )
     return active_tools
@@ -157,24 +181,13 @@ def routing_agent(state: AgentState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
 
-    # 1. Separa histórico textual para o guardrail rápido
-    historico_textual = [
-        m for m in state["messages"]
-        if not (isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"))
-        and not isinstance(m, ToolMessage)
-    ]
-    
-    # GUARDRAIL AUTOMÁTICO: Se a IA fez uma pergunta operacional na mensagem anterior
-    # (ex: pediu horário, barbeiro, confirmação), a resposta do usuário É OPERACIONAL.
-    if len(historico_textual) >= 2:
-        ultima_msg_ia = str(historico_textual[-2].content).lower() if historico_textual[-2].type == "ai" else ""
-        gatilhos_operacionais = ["horário", "horario", "barbeiro", "profissional", "serviço", "servico", "agendar", "data", "dia"]
-        
-        if any(gatilho in ultima_msg_ia for gatilho in gatilhos_operacionais):
-            print(" -> 🛡️ Guardrail Ativo: Usuário está respondendo a uma pergunta de agendamento. Forçando OPERATIONAL!")
-            return {"messages": [AIMessage(content="Routing decision: OPERATIONAL")]}
-
-    # 2. Se não caiu no guardrail, aciona o LLM passando as mensagens nativas
+    # A classificação de intenção é decidida inteiramente pelo LLM abaixo — foi
+    # removido o atalho por palavra-chave que forçava OPERATIONAL sempre que a
+    # ÚLTIMA MENSAGEM DA PRÓPRIA IA continha palavras como "horário" ou "serviço",
+    # mesmo fora de contexto de agendamento (ex: "informações sobre nossos
+    # serviços, planos ou agendamentos" fazia qualquer resposta do cliente cair
+    # em operational_node, inclusive perguntas institucionais).
+    # Aciona o LLM passando as mensagens nativas
     system_prompt = SystemMessage(content=(
         "You are an orchestrator router for a business booking application.\n"
         "Classify the intent of the user's latest response based on the conversation context.\n\n"
@@ -321,7 +334,10 @@ def operational_node(state: AgentState, config: RunnableConfig):
 
     contexto_encontrado = vector_manager_global.search_context(pergunta_usuario, tenant_id, 5)
     contexto_formatado = "\n\n".join(contexto_encontrado)
-    
+
+    # As tools são resolvidas ANTES do prompt para que BOOKING_INTEGRITY_RULE
+    # só entre quando o tenant realmente tem agendamento habilitado.
+    all_active_tools = get_active_tools(tenant_id)
 
     tabela_dias, hora_atual_str, data_hoje_iso = get_tabela_dias(7)
     system_prompt_str = carregar_operacional_prompt(
@@ -336,6 +352,8 @@ def operational_node(state: AgentState, config: RunnableConfig):
     # carregar_operacional_prompt() pode devolver um prompt customizado do tenant vindo do
     # banco, que não necessariamente inclui a GROUNDEDNESS RULE presente no fallback local.
     system_prompt_str = f"{system_prompt_str}\n\n{GROUNDEDNESS_RULE}"
+    if all_active_tools:
+        system_prompt_str = f"{system_prompt_str}\n\n{BOOKING_INTEGRITY_RULE}"
 
     # Injeta dados de contato já vistos na sessão para evitar perguntas repetidas.
     profile = extract_customer_profile(state["messages"])
@@ -366,44 +384,12 @@ def operational_node(state: AgentState, config: RunnableConfig):
     # 2. SEGREDO DO LANGGRAPH: Montamos o SystemMessage + TODO O HISTÓRICO REAL (incluindo ToolMessages)
     # REMOVER: mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + mensagens_chat
     mensagens_para_ia = [SystemMessage(content=system_prompt_str)] + historico_limitado
-    
+
     # 3. Disponibiliza somente as tools do backend configurado para o tenant.
-    all_active_tools = get_active_tools(tenant_id)
-    
     llm_dynamic = llm.bind_tools(all_active_tools, parallel_tool_calls=False)
 
     log_llm_prompt("operational_node", tenant_id, mensagens_para_ia)
     resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
-
-    if should_retry_availability_tool_call(state["messages"], resposta_ia):
-        print(" -> [AVAILABILITY GUARD] Resposta textual sobre disponibilidade. Reforcando uso obrigatorio de tool.")
-        retry_messages = [
-            SystemMessage(content=system_prompt_str),
-            SystemMessage(content=(
-                "CRITICAL OVERRIDE: The latest user message asks about schedule availability or whether a time slot is free/busy. "
-                "You MUST call consultar_agenda (or the tenant's available calendar tool) before saying whether the slot is occupied or free. "
-                "Do not answer from memory or from the knowledge base. If the exact time range is missing, ask only for the missing time. "
-                "Never claim a slot is occupied or available unless a tool has just succeeded."
-            )),
-        ] + historico_limitado
-        log_llm_prompt("operational_node.retry_availability", tenant_id, retry_messages)
-        resposta_ia = llm_dynamic.invoke(retry_messages)
-
-    if should_retry_booking_tool_call(state["messages"], resposta_ia):
-        print(" -> [BOOKING GUARD] Resposta textual apos confirmacao. Reforcando uso obrigatorio de tool.")
-        retry_messages = [
-            SystemMessage(content=system_prompt_str),
-            SystemMessage(content=(
-                "CRITICAL OVERRIDE: The latest user message is an explicit confirmation in a booking flow. "
-                "Do not ask for confirmation again and do not merely summarize the booking. "
-                "If the chat history already contains service, date, start time, end time, and customer data, "
-                "you MUST call the correct booking tool now. If any required field is missing, ask only for the missing field. "
-                "Never claim that the booking is confirmed unless a tool has just succeeded."
-            )),
-            SystemMessage(content=build_booking_retry_context_block(state["messages"], profile)),
-        ] + historico_limitado
-        log_llm_prompt("operational_node.retry_booking", tenant_id, retry_messages)
-        resposta_ia = llm_dynamic.invoke(retry_messages)
 
     # BLINDAGEM: Se o modelo ignorar a instrução do prompt e ainda assim mandar várias
     # tool calls de uma vez, mantemos apenas a primeira. O ideal é que o PROMPT já
@@ -426,20 +412,6 @@ def operational_node(state: AgentState, config: RunnableConfig):
         print(f" -> 🚀 TOOL CALL DISPARADO AUTONOMAMENTE: {resposta_ia.tool_calls}")
     else:
         print(" -> LLM gerou resposta em texto (nenhuma tool foi chamada).")
-
-    if should_block_unverified_booking_response(state["messages"], resposta_ia):
-        print(" -> [BOOKING GUARD] Bloqueando confirmacao sem persistencia em calendario.")
-        resposta_ia = AIMessage(content=(
-            "Ainda nao consegui registrar esse agendamento no calendario. "
-            "Nenhum horario foi reservado ate agora. Vou precisar validar os dados e tentar novamente antes de confirmar."
-        ))
-
-    if should_block_unverified_availability_response(state["messages"], resposta_ia):
-        print(" -> [AVAILABILITY GUARD] Bloqueando afirmacao de disponibilidade sem consulta ao calendario.")
-        resposta_ia = AIMessage(content=(
-            "Ainda nao consegui consultar a agenda para confirmar esse horario. "
-            "Vou precisar validar a disponibilidade no calendario antes de dizer se esta ocupado ou livre."
-        ))
 
     return {"messages": [resposta_ia]}
 

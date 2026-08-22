@@ -52,13 +52,20 @@ def upgrade() -> None:
     conn.exec_driver_sql(
         "ALTER TABLE tenant_prompts ALTER COLUMN tenant_id TYPE VARCHAR(50)"
     )
-    conn.exec_driver_sql(
+    fk_existe = conn.exec_driver_sql(
         """
-        ALTER TABLE tenant_prompts
-        ADD CONSTRAINT fk_tenant_prompts_tenant_id
-        FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'tenant_prompts' AND constraint_name = 'fk_tenant_prompts_tenant_id'
         """
-    )
+    ).fetchone()
+    if not fk_existe:
+        conn.exec_driver_sql(
+            """
+            ALTER TABLE tenant_prompts
+            ADD CONSTRAINT fk_tenant_prompts_tenant_id
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            """
+        )
 
 
 def downgrade() -> None:
