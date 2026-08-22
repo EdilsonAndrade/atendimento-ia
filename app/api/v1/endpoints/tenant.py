@@ -1,5 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.schemas.tenant import TenantCreate, TenantUpdate, TenantResponse, DeleteResponse
+from app.schemas.tenant import (
+    DeleteResponse,
+    TenantCreate,
+    TenantDeleteImpactResponse,
+    TenantListResponse,
+    TenantResponse,
+    TenantUpdate,
+)
 from app.schemas.prompt_manager import error_detail
 from modules.tenant.tenant_service import (
     PromptNodeTypeInvalidError,
@@ -17,6 +24,23 @@ def search_tenants(
     tenant_service: TenantService = Depends(),
 ):
     return tenant_service.search_tenants(q, limit)
+
+
+@router.get(
+    "/list",
+    response_model=TenantListResponse,
+    summary="Listar tenants paginado, com tags de prompt/guardrail (grid da tela de Tenants, EDI-46)",
+)
+def list_tenants(
+    q: str | None = Query(None, min_length=1, description="Termo de busca — casado parcialmente contra id/name. Omitido, lista todos."),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    tenant_service: TenantService = Depends(),
+):
+    print("******************************************** cheguei aqui")
+    resposta = tenant_service.list_tenants(q, limit, offset)
+    print("******************************************** resposta", resposta)
+    return tenant_service.list_tenants(q, limit, offset)
 
 
 @router.post("/", response_model=TenantResponse)
@@ -53,10 +77,21 @@ def update_tenant(tenant_id: str, tenant_data: TenantUpdate, tenant_service: Ten
         raise HTTPException(status_code=404, detail="Tenant not found")
     return updated_tenant
 
+@router.get("/{tenant_id}/delete-impact", response_model=TenantDeleteImpactResponse)
+def get_tenant_delete_impact(tenant_id: str, tenant_service: TenantService = Depends()):
+    """Pré-visualização do que `DELETE /{tenant_id}` faria agora — o que seria
+    excluído de fato versus apenas desvinculado (EDI-45)."""
+    impact = tenant_service.get_delete_impact(tenant_id)
+    if impact is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"tenant_id": tenant_id, **impact}
+
+
 @router.delete("/{tenant_id}", response_model=DeleteResponse)
 def delete_tenant(tenant_id: str, tenant_service: TenantService = Depends()):
-    # Logic to delete a tenant using the service
-    deleted_tenant_id = tenant_service.delete_tenant(tenant_id)
+    """Exclui o tenant em cascata: prompts/guardrails exclusivos dele são
+    excluídos de fato; compartilhados ou globais são só desvinculados (EDI-45)."""
+    deleted_tenant_id = tenant_service.delete_tenant_cascade(tenant_id)
     if deleted_tenant_id is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
     return {"id": deleted_tenant_id, "message": "Tenant deleted successfully"}

@@ -65,6 +65,15 @@ def test_search_rejects_empty_query_with_422():
     assert response.status_code == 422
 
 
+def test_search_rejects_missing_query_with_422():
+    fake = FakeTenantService([])
+    client = make_client(fake)
+
+    response = client.get("/api/v1/tenants")
+
+    assert response.status_code == 422
+
+
 def test_search_respects_custom_limit():
     fake = FakeTenantService([])
     client = make_client(fake)

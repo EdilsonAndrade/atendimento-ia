@@ -206,6 +206,25 @@ class PromptManagerRepository:
     # Nome antigo, mantido porque expressa a intenção no contexto de exclusão.
     get_tenants_blocking_prompt = get_tenants_by_prompt
 
+    def get_prompts_linked_to_tenant_active(self, tenant_id: str) -> List[Dict[str, Any]]:
+        """Prompts com vínculo ATIVO a este tenant (um por `node_type`, tipicamente).
+
+        Usado pela exclusão em cascata de tenant (EDI-45): só vínculos ativos
+        entram na decisão de exclusividade, pela mesma razão de
+        `get_tenants_by_prompt` — vínculo inativo é histórico, não configuração
+        vigente.
+        """
+        with self.get_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("""
+                    SELECT p.id, p.titulo, p.node_type
+                    FROM tenant_prompts tp
+                    JOIN prompts p ON p.id = tp.prompt_id
+                    WHERE tp.tenant_id = %s AND tp.is_active = TRUE
+                    ORDER BY p.node_type
+                """, (tenant_id,))
+                return cur.fetchall()
+
     def get_prompts_blocking_guardrail(self, guardrail_id: str) -> List[Dict[str, Any]]:
         """Prompts que usam este guardrail E têm ao menos um tenant ativo.
 
@@ -247,7 +266,28 @@ class PromptManagerRepository:
                     WHERE g.is_global = TRUE OR pg.prompt_id = %s
                 """, (prompt_id, prompt_id))
                 return cur.fetchall()
-    
+
+    def get_guardrail_links_for_prompt(self, prompt_id: str) -> List[Dict[str, Any]]:
+        """Guardrails vinculados a este prompt via `prompt_guardrails` (associação
+        explícita apenas — SEM misturar `is_global`, ao contrário de
+        `get_guardrails_by_prompt`).
+
+        Usado pela exclusão em cascata de tenant (EDI-45) para decidir, um a um,
+        se cada guardrail explicitamente associado ao prompt pode ser excluído
+        de fato ou deve ser preservado (global ou usado por outro prompt).
+        """
+        with self.get_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("""
+                    SELECT g.id, g.titulo, g.conteudo, g.is_global
+                    FROM prompt_guardrails pg
+                    JOIN guardrails g ON g.id = pg.guardrail_id
+                    WHERE pg.prompt_id = %s
+                    ORDER BY g.titulo
+                """, (prompt_id,))
+                return cur.fetchall()
+
+
     def update_prompt(self, prompt_id: str, titulo: str, conteudo: str, is_default: bool, node_type: str = "operational") -> Optional[Dict[str, Any]]:
         """Atualiza um prompt. PUT substitui o estado completo do recurso — assim como
         titulo/conteudo/is_default, node_type também é sempre o valor enviado pelo
