@@ -129,6 +129,111 @@ class PromptManagerRepository:
                 """, (tenant_id, node_type))
                 return cur.fetchone()
 
+    def get_prompt_by_id(self, prompt_id: str) -> Optional[Dict[str, Any]]:
+        """Busca um prompt pelo id. Usado na validação do cadastro de tenant, que
+        precisa saber se o prompt existe E qual o seu node_type."""
+        with self.get_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT id, titulo, conteudo, is_default, node_type FROM prompts WHERE id = %s",
+                    (prompt_id,),
+                )
+                return cur.fetchone()
+
+    def link_tenants_bulk(
+        self, prompt_id: str, tenant_ids: List[str], custom_override: Optional[str] = None
+    ) -> None:
+        """Vincula UM prompt a N tenants numa única transação (FR-019/FR-020).
+
+        Mesma semântica do sync_tenant_prompt singular, aplicada em lote: desativa
+        os vínculos ativos do MESMO node_type de cada tenant e ativa o novo, sem
+        tocar em vínculos de outros node_type (FR-021).
+
+        Uma única conexão para toda a operação: se qualquer tenant falhar, nenhum
+        vínculo é aplicado.
+        """
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE tenant_prompts tp
+                    SET is_active = FALSE, updated_at = NOW()
+                    FROM prompts p
+                    WHERE tp.prompt_id = p.id
+                      AND tp.tenant_id = ANY(%(tenant_ids)s)
+                      AND tp.prompt_id != %(prompt_id)s
+                      AND p.node_type = (SELECT node_type FROM prompts WHERE id = %(prompt_id)s)
+                """, {"tenant_ids": list(tenant_ids), "prompt_id": prompt_id})
+
+                cur.executemany("""
+                    INSERT INTO tenant_prompts (tenant_id, prompt_id, is_active, custom_content_override)
+                    VALUES (%s, %s, TRUE, %s)
+                    ON CONFLICT (tenant_id, prompt_id)
+                    DO UPDATE SET is_active = TRUE,
+                                  custom_content_override = EXCLUDED.custom_content_override,
+                                  updated_at = NOW()
+                """, [(tenant_id, prompt_id, custom_override) for tenant_id in tenant_ids])
+
+    def get_existing_tenant_ids(self, tenant_ids: List[str]) -> List[str]:
+        """Devolve, dentre os informados, os tenant_ids que realmente existem.
+        A diferença em relação à lista original são os bloqueadores do erro
+        TENANT_NOT_FOUND."""
+        with self.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM tenants WHERE id = ANY(%s)", (list(tenant_ids),))
+                return [row[0] for row in cur.fetchall()]
+
+    # --- BLOQUEIOS DE EXCLUSÃO (EDI-43) ---
+
+    def get_tenants_by_prompt(self, prompt_id: str) -> List[Dict[str, Any]]:
+        """Tenants com vínculo ATIVO neste prompt.
+
+        Serve a dois propósitos que são a mesma pergunta vista de ângulos
+        diferentes: listar quem usa o prompt (tela de associação em massa) e
+        listar quem impede a exclusão dele (blockers do 409). Vínculos inativos
+        não entram: são histórico, não configuração vigente.
+        """
+        with self.get_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("""
+                    SELECT t.id, t.name
+                    FROM tenant_prompts tp
+                    JOIN tenants t ON t.id = tp.tenant_id
+                    WHERE tp.prompt_id = %s AND tp.is_active = TRUE
+                    ORDER BY t.id
+                """, (prompt_id,))
+                return cur.fetchall()
+
+    # Nome antigo, mantido porque expressa a intenção no contexto de exclusão.
+    get_tenants_blocking_prompt = get_tenants_by_prompt
+
+    def get_prompts_blocking_guardrail(self, guardrail_id: str) -> List[Dict[str, Any]]:
+        """Prompts que usam este guardrail E têm ao menos um tenant ativo.
+
+        Um guardrail associado apenas a prompts sem tenant ativo não bloqueia:
+        não há proteção em vigor a perder.
+        """
+        with self.get_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("""
+                    SELECT p.id, p.titulo AS name, COUNT(DISTINCT tp.tenant_id) AS tenant_count
+                    FROM prompt_guardrails pg
+                    JOIN prompts p ON p.id = pg.prompt_id
+                    JOIN tenant_prompts tp ON tp.prompt_id = p.id AND tp.is_active = TRUE
+                    WHERE pg.guardrail_id = %s
+                    GROUP BY p.id, p.titulo
+                    ORDER BY p.titulo
+                """, (guardrail_id,))
+                return cur.fetchall()
+
+    def get_guardrail_by_id(self, guardrail_id: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    "SELECT id, titulo, conteudo, is_global FROM guardrails WHERE id = %s",
+                    (guardrail_id,),
+                )
+                return cur.fetchone()
+
     def get_guardrails_by_prompt(self, prompt_id: str) -> List[Dict[str, Any]]:
         """Busca os guardrails vinculados ao prompt via N:N, MAIS todos os guardrails
         marcados como is_global=TRUE (aplicados a todo tenant automaticamente, sem
@@ -210,17 +315,34 @@ class PromptManagerRepository:
                 cur.execute("DELETE FROM guardrails WHERE id = %s", (guardrail_id,))
                 return cur.rowcount > 0
 
-    def seed_missing_node_prompts(self, chitchat_default_titulo: str, chitchat_default_conteudo: str) -> None:
-        """Seed idempotente (User Story 3 / research.md R5), roda com segurança em toda inicialização:
+    def seed_missing_node_prompts(
+        self,
+        chitchat_default_titulo: str,
+        chitchat_default_conteudo: str,
+        node_prompt_seeds: Optional[Dict[str, Dict[str, str]]] = None,
+        global_guardrail_seed: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """Seed idempotente, roda com segurança em toda inicialização:
 
-        1. Garante 1 prompt is_default=TRUE, node_type='chitchat' (cria apenas se nenhum existir ainda),
-           usando o texto hoje fixo no código como conteúdo inicial.
-        2. Para cada tenant com vínculo operational ativo e SEM vínculo institutional ativo, copia o
+        1. Garante 1 prompt is_default=TRUE, node_type='chitchat' (cria apenas se nenhum existir ainda).
+        2. (EDI-43) Garante ao menos 1 prompt por node_type, a partir dos arquivos .md do projeto,
+           para o combo do cadastro de tenant nunca aparecer vazio numa instalação nova.
+        3. (EDI-43) Garante 1 guardrail is_global=TRUE, a partir do guardrails.md. Reproduz o
+           comportamento anterior — em que todo tenant recebia esse texto — sem depender de
+           associação manual.
+        4. Para cada tenant com vínculo operational ativo e SEM vínculo institutional ativo, copia o
            prompt operational ativo (conteúdo + prompt_guardrails) para um novo prompt
            node_type='institutional' e cria o vínculo institutional correspondente.
 
-        Não duplica nada ao rodar novamente: tenants que já têm vínculo institutional (seedado antes ou
-        configurado manualmente pelo admin) são ignorados; o prompt padrão de chitchat só é criado uma vez.
+        Não duplica nada ao rodar novamente e NUNCA sobrescreve conteúdo editado pelo admin: o
+        critério é sempre "existe algum registro deste tipo?", nunca o título — que o admin pode
+        renomear, o que faria um seed baseado em título recriar duplicatas a cada boot.
+
+        `node_prompt_seeds`: {node_type: {"titulo": str, "conteudo": str}}
+        `global_guardrail_seed`: {"titulo": str, "conteudo": str}
+
+        Ambos são opcionais para não quebrar chamadores existentes (e os testes que já passavam
+        apenas o chitchat).
         """
 
         with self.get_connection() as conn:
@@ -236,6 +358,36 @@ class PromptManagerRepository:
                         """,
                         (chitchat_default_titulo, chitchat_default_conteudo),
                     )
+
+                # 2. Um prompt semente por node_type (EDI-43 / FR-011).
+                for node_type, seed in (node_prompt_seeds or {}).items():
+                    cur.execute(
+                        "SELECT id FROM prompts WHERE node_type = %s LIMIT 1",
+                        (node_type,),
+                    )
+                    if cur.fetchone():
+                        continue
+
+                    cur.execute(
+                        """
+                        INSERT INTO prompts (titulo, conteudo, is_default, node_type)
+                        VALUES (%s, %s, FALSE, %s)
+                        """,
+                        (seed["titulo"], seed["conteudo"], node_type),
+                    )
+
+                # 3. Um guardrail global (EDI-43 / FR-012). O critério é a existência de
+                # QUALQUER is_global=TRUE: se o admin já mantém um, não criamos outro.
+                if global_guardrail_seed:
+                    cur.execute("SELECT id FROM guardrails WHERE is_global = TRUE LIMIT 1")
+                    if not cur.fetchone():
+                        cur.execute(
+                            """
+                            INSERT INTO guardrails (titulo, conteudo, is_global)
+                            VALUES (%s, %s, TRUE)
+                            """,
+                            (global_guardrail_seed["titulo"], global_guardrail_seed["conteudo"]),
+                        )
 
         with self.get_connection() as conn:
             with conn.cursor(row_factory=dict_row) as cur:
@@ -312,14 +464,23 @@ class PromptManagerRepository:
                 if not tenant_data:
                     return None
 
-                # 2. Pega os guardrails vinculados a este prompt na tabela N:N
+                # 2. Guardrails vinculados a este prompt na N:N MAIS os is_global.
+                #
+                # O `OR g.is_global = TRUE` é uma correção do EDI-43: esta query
+                # antes fazia só o JOIN em prompt_guardrails, enquanto o runtime
+                # (get_guardrails_by_prompt) já incluía os globais. Resultado: a
+                # tela do admin mostrava MENOS guardrails do que o agente
+                # aplicava, para o mesmo tenant. A cláusula precisa ser idêntica
+                # à de get_guardrails_by_prompt — duas queries com a mesma regra
+                # escrita em dois lugares foi exatamente como a divergência
+                # nasceu.
                 cur.execute("""
-                    SELECT g.id, g.titulo, g.conteudo, g.is_global
+                    SELECT DISTINCT g.id, g.titulo, g.conteudo, g.is_global
                     FROM guardrails g
-                    JOIN prompt_guardrails pg ON g.id = pg.guardrail_id
-                    WHERE pg.prompt_id = %s
-                """, (tenant_data["prompt_id"],))
-                
+                    LEFT JOIN prompt_guardrails pg ON g.id = pg.guardrail_id AND pg.prompt_id = %s
+                    WHERE g.is_global = TRUE OR pg.prompt_id = %s
+                """, (tenant_data["prompt_id"], tenant_data["prompt_id"]))
+
                 guardrails = cur.fetchall()
 
                 # Retorna os dados agrupados

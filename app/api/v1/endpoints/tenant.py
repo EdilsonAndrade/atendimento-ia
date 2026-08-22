@@ -1,6 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.schemas.tenant import TenantCreate, TenantUpdate, TenantResponse, DeleteResponse
-from modules.tenant.tenant_service import TenantService
+from app.schemas.prompt_manager import error_detail
+from modules.tenant.tenant_service import (
+    PromptNodeTypeInvalidError,
+    PromptNotFoundError,
+    TenantService,
+)
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
 
@@ -16,9 +21,20 @@ def search_tenants(
 
 @router.post("/", response_model=TenantResponse)
 def create_tenant(tenant_data: TenantCreate, tenant_service: TenantService = Depends()):
-    # Logic to create a new tenant using the service
-    created_tenant = tenant_service.create_tenant(tenant_data.dict())
-    return created_tenant
+    """Cria o tenant já vinculado a um prompt operacional (EDI-43).
+
+    O `prompt_id` é obrigatório no schema, então a ausência dele é barrada pelo
+    Pydantic com 422 (formato de lista) antes de chegar aqui. Os dois erros
+    abaixo são de regra de negócio e usam o envelope estruturado.
+    """
+    try:
+        return tenant_service.create_tenant(tenant_data.dict())
+    except PromptNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=error_detail("PROMPT_NOT_FOUND", str(exc)))
+    except PromptNodeTypeInvalidError as exc:
+        raise HTTPException(
+            status_code=400, detail=error_detail("PROMPT_NODE_TYPE_INVALID", str(exc))
+        )
 
 
 @router.get("/{tenant_id}", response_model=TenantResponse)

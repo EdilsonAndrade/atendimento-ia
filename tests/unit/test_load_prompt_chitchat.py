@@ -2,10 +2,12 @@ import prompts.load_prompt as load_prompt_module
 
 
 class FakeRepo:
-    def __init__(self, own_prompt=None, default_prompt=None, guardrails_by_prompt_id=None):
+    def __init__(self, own_prompt=None, default_prompt=None, guardrails_by_prompt_id=None,
+                 global_guardrails=None):
         self._own_prompt = own_prompt
         self._default_prompt = default_prompt
         self._guardrails_by_prompt_id = guardrails_by_prompt_id or {}
+        self._global_guardrails = global_guardrails or []
 
     def get_active_prompt_by_tenant(self, tenant_id, node_type="operational"):
         return self._own_prompt if node_type == "chitchat" else None
@@ -15,6 +17,11 @@ class FakeRepo:
 
     def get_guardrails_by_prompt(self, prompt_id):
         return self._guardrails_by_prompt_id.get(prompt_id, [])
+
+    def get_global_guardrails(self):
+        # Passou a ser consultado no caminho "sem vínculo próprio", que antes
+        # devolvia o guardrails.md sem tocar no banco.
+        return self._global_guardrails
 
 
 class FakeService:
@@ -55,15 +62,22 @@ def test_falls_back_to_default_prompt_when_no_own_link(monkeypatch):
     assert "Padrao" in result
 
 
-def test_falls_back_to_local_file_when_nothing_configured(monkeypatch):
-    repo = FakeRepo(own_prompt=None, default_prompt=None)
+def test_uses_local_template_with_db_guardrails_when_nothing_configured(monkeypatch):
+    """Nível 3: sem vínculo e sem prompt padrão. O template local ainda é usado
+    (com o seed em vigor esta situação não deveria ocorrer), mas os guardrails
+    agora vêm do banco — o guardrails.md deixou de ser fonte de runtime (FR-006)."""
+    repo = FakeRepo(
+        own_prompt=None,
+        default_prompt=None,
+        global_guardrails=[{"id": "gG", "titulo": "Global", "conteudo": "Regra global do banco."}],
+    )
     patch_service(monkeypatch, repo)
 
     result = load_prompt_module.carregar_chitchat_prompt("tenant-sem-nada")
 
-    # Mesmo texto que chitchat_node produzia antes desta feature (guardrails.md + instrução fixa)
     assert "polite AI assistant for the business" in result
-    assert "REGRA ABSOLUTA" in result  # trecho de guardrails.md
+    assert "Regra global do banco." in result
+    assert "REGRA ABSOLUTA" not in result  # guardrails.md não é mais lido em runtime
 
 
 def test_falls_back_to_local_file_on_db_error(monkeypatch):

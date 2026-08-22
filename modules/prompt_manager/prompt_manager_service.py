@@ -7,6 +7,52 @@ class DefaultPromptNotConfiguredError(Exception):
     prompt marcado como is_default=TRUE para servir de fallback."""
 
 
+class ResourceInUseError(Exception):
+    """Base das recusas de exclusão do EDI-43.
+
+    Carrega os `blockers` — os itens que impedem a operação — para o endpoint
+    devolvê-los ao frontend. Sem eles o admin veria apenas 'não é possível' e
+    teria que descobrir sozinho o que desfazer primeiro.
+    """
+
+    code = "RESOURCE_IN_USE"
+
+    def __init__(self, message: str, blockers: Optional[List[Dict[str, Any]]] = None):
+        self.blockers = blockers or []
+        super().__init__(message)
+
+
+class PromptInUseByTenantsError(ResourceInUseError):
+    code = "PROMPT_IN_USE_BY_TENANTS"
+
+
+class GuardrailIsGlobalError(ResourceInUseError):
+    code = "GUARDRAIL_IS_GLOBAL"
+
+
+class GuardrailInUseByTenantsError(ResourceInUseError):
+    code = "GUARDRAIL_IN_USE_BY_TENANTS"
+
+
+class PromptNotFoundError(Exception):
+    code = "PROMPT_NOT_FOUND"
+
+    def __init__(self, prompt_id: str):
+        self.prompt_id = prompt_id
+        super().__init__(f"Prompt {prompt_id!r} não encontrado.")
+
+
+class TenantsNotFoundError(Exception):
+    code = "TENANT_NOT_FOUND"
+
+    def __init__(self, tenant_ids: List[str]):
+        self.tenant_ids = tenant_ids
+        self.blockers = [{"type": "tenant", "id": tid} for tid in tenant_ids]
+        super().__init__(
+            f"{len(tenant_ids)} tenants informados não existem. Nenhum vínculo foi aplicado."
+        )
+
+
 class PromptManagerService:
     def __init__(self, get_connection_func):
         self.repository = PromptManagerRepository(get_connection_func)
@@ -18,6 +64,43 @@ class PromptManagerService:
         return self.repository.create_guardrail(titulo, conteudo, is_global)
 
     def delete_guardrail(self, guardrail_id: str) -> bool:
+        """Recusa a exclusão de um guardrail global ou em uso (FR-023/FR-024/FR-025).
+
+        O teste de `is_global` é indispensável e vem PRIMEIRO. Um guardrail global
+        não tem linha em prompt_guardrails — ele alcança os tenants pela cláusula
+        `WHERE g.is_global = TRUE`. Um critério baseado só em associação deixaria
+        justamente o guardrail que protege todos como o mais fácil de apagar.
+
+        A precedência do global também é prática: enquanto ele for global,
+        desassociá-lo dos prompts não muda nada, porque o alcance independe da
+        associação. Então esse é o passo que o admin precisa dar primeiro.
+        """
+        guardrail = self.repository.get_guardrail_by_id(guardrail_id)
+        if not guardrail:
+            return False
+
+        if guardrail["is_global"]:
+            raise GuardrailIsGlobalError(
+                "Este guardrail é global e se aplica a todos os tenants. "
+                "Desmarque 'global' antes de excluir."
+            )
+
+        blockers = self.repository.get_prompts_blocking_guardrail(guardrail_id)
+        if blockers:
+            raise GuardrailInUseByTenantsError(
+                f"Este guardrail está associado a {len(blockers)} prompt(s) em uso por tenants. "
+                "Remova a associação antes de excluir.",
+                blockers=[
+                    {
+                        "type": "prompt",
+                        "id": str(b["id"]),
+                        "name": b["name"],
+                        "tenant_count": b["tenant_count"],
+                    }
+                    for b in blockers
+                ],
+            )
+
         return self.repository.delete_guardrail(guardrail_id)
 
     def list_prompts(self, node_type: Optional[str] = None):
@@ -38,6 +121,55 @@ class PromptManagerService:
 
     def link_tenant_to_prompt(self, tenant_id: str, prompt_id: str, custom_override: Optional[str] = None):
         self.repository.sync_tenant_prompt(tenant_id, prompt_id, custom_override)
+
+    def list_tenants_by_prompt(self, prompt_id: str) -> Dict[str, Any]:
+        """Tenants atualmente vinculados a um prompt (EDI-44).
+
+        Sustenta a tela de associação em massa: antes de aplicar um prompt a N
+        tenants, o admin precisa ver quem já o usa. É a mesma informação que
+        aparece nos `blockers` do 409 de exclusão, disponibilizada sem exigir que
+        o admin tente excluir para descobrir.
+        """
+        prompt = self.repository.get_prompt_by_id(prompt_id)
+        if not prompt:
+            raise PromptNotFoundError(prompt_id)
+
+        tenants = self.repository.get_tenants_by_prompt(prompt_id)
+
+        return {
+            "prompt_id": str(prompt["id"]),
+            "prompt_titulo": prompt["titulo"],
+            "node_type": prompt["node_type"],
+            "tenant_count": len(tenants),
+            "tenants": [{"id": str(t["id"]), "name": t["name"]} for t in tenants],
+        }
+
+    def link_tenants_bulk(
+        self, prompt_id: str, tenant_ids: List[str], custom_override: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Associa um prompt a vários tenants numa única operação (FR-019).
+
+        Valida tudo ANTES de escrever: prompt existe, e todos os tenants existem.
+        A alternativa — aplicar o que der e reportar o resto — deixaria o admin
+        com um estado parcial que ele não pediu e teria que auditar manualmente.
+        """
+        prompt = self.repository.get_prompt_by_id(prompt_id)
+        if not prompt:
+            raise PromptNotFoundError(prompt_id)
+
+        existentes = set(self.repository.get_existing_tenant_ids(tenant_ids))
+        faltantes = [tid for tid in tenant_ids if tid not in existentes]
+        if faltantes:
+            raise TenantsNotFoundError(faltantes)
+
+        self.repository.link_tenants_bulk(prompt_id, tenant_ids, custom_override)
+
+        return {
+            "prompt_id": str(prompt["id"]),
+            "node_type": prompt["node_type"],
+            "linked_count": len(tenant_ids),
+            "tenant_ids": list(tenant_ids),
+        }
         return {"status": "success", "message": f"Tenant {tenant_id} vinculado ao prompt {prompt_id}"}
 
     def build_system_prompt_for_tenant(self, tenant_id: str, fallback_prompt_str: str, **kwargs) -> str:
@@ -68,6 +200,21 @@ class PromptManagerService:
         )
         
     def delete_prompt(self, prompt_id: str) -> bool:
+        """Recusa a exclusão de um prompt com vínculo ativo (FR-022).
+
+        Antes, delete_prompt apagava tenant_prompts em cascata: excluir um prompt
+        usado por 10 tenants deixava os 10 órfãos, em silêncio. Era o buraco que
+        reabria o invariante fechado pelo cadastro obrigatório e pelo backfill.
+        """
+        blockers = self.repository.get_tenants_blocking_prompt(prompt_id)
+        if blockers:
+            raise PromptInUseByTenantsError(
+                f"Este prompt está em uso por {len(blockers)} tenant(s) e não pode ser excluído. "
+                "Vincule outro prompt a esses tenants antes de excluir.",
+                blockers=[
+                    {"type": "tenant", "id": str(b["id"]), "name": b["name"]} for b in blockers
+                ],
+            )
         return self.repository.delete_prompt(prompt_id)
 
     def update_prompt_with_relations(

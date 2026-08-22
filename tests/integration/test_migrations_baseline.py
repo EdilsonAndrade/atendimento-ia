@@ -14,6 +14,7 @@ import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from psycopg import sql
 
 from pathlib import Path
@@ -268,4 +269,11 @@ def test_upgrade_rodado_de_novo_e_inofensivo(banco_migrado, monkeypatch_module):
 
     linhas = _consultar(banco_migrado, "SELECT version_num FROM alembic_version")
 
-    assert linhas == [("0001_baseline",)]
+    # A versão gravada é a head ATUAL, resolvida do próprio diretório de
+    # migrações. Antes isto era comparado com "0001_baseline" fixo, o que só
+    # valia enquanto a baseline era a única revisão — o teste quebrava a cada
+    # migração nova, sem que nada de errado tivesse acontecido. O que ele
+    # verifica de fato é que rodar `upgrade head` de novo é inofensivo.
+    head = ScriptDirectory.from_config(config).get_current_head()
+
+    assert linhas == [(head,)]

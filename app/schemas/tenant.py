@@ -15,6 +15,15 @@ class TenantCreate(BaseModel):
     name: str = Field(..., description="O nome do tenant.")
     google_calendar_id: str = Field(..., description="O ID do calendário do Google associado ao tenant.")
     allowed_domains: list[str] = Field(..., description="Lista de domínios autorizados para o tenant.")
+    # Obrigatório desde o EDI-43: um tenant sem prompt vinculado é erro de
+    # configuração, e absorvê-lo em silêncio fazia o cliente receber o texto
+    # genérico do projeto. Só o node_type 'operational' entra aqui — institutional
+    # e chitchat resolvem pelas cadeias próprias.
+    prompt_id: str = Field(
+        ...,
+        min_length=1,
+        description="ID do prompt (node_type='operational') a ser vinculado ao tenant na criação.",
+    )
     
 class TenantUpdate(BaseModel):
     name: str = Field(..., description="O nome do tenant.")

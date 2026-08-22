@@ -2,6 +2,11 @@ import re
 from pathlib import Path
 from infrastructure.connection import get_db_connection
 from modules.prompt_manager.prompt_manager_service import PromptManagerService
+from prompts.prompt_resolver import (
+    PromptConfigurationError,
+    resolver_guardrails_list,
+    resolver_prompt_e_guardrails,
+)
 
 # Caminhos locais para os arquivos Markdown (Plano de Contingência / Fallback)
 PROMPTS_DIR = Path(__file__).resolve().parent
@@ -94,20 +99,24 @@ def _aplicar_guardrails(template: str, guardrails_str: str, **valores) -> str:
 
 def carregar_guardrails(tenant_id):
     """
-    Resolve o texto de guardrails para o tenant: se houver prompt vinculado no
-    banco, usa os guardrails dessa tabela N:N + os is_global=TRUE. Caso
-    contrário (sem vínculo ou erro de conexão), usa o arquivo local guardrails.md.
-    Reaproveitada tanto pelo fluxo operacional quanto pelo institucional.
+    Resolve o texto de guardrails para o tenant, SEMPRE a partir do banco.
+
+    Com prompt vinculado: guardrails da tabela N:N + os is_global=TRUE.
+    Sem prompt vinculado: os is_global=TRUE, que antes desta correção nunca eram
+    consultados neste caminho — o early-return devolvia o guardrails.md e fazia
+    "guardrail global" significar, na prática, "global só para quem já tem prompt
+    vinculado". Justamente o tenant novo, que mais precisa da rede de proteção
+    padrão, ficava sem.
+
+    O arquivo local só é lido quando o banco está indisponível, para não derrubar
+    o atendimento.
     """
     try:
         service = PromptManagerService(get_db_connection)
         active_prompt = service.repository.get_active_prompt_by_tenant(tenant_id)
+        prompt_id = active_prompt["id"] if active_prompt else None
 
-        if not active_prompt:
-            return GUARDRAIL_PATH.read_text(encoding="utf-8")
-
-        guardrails_db_list = service.repository.get_guardrails_by_prompt(active_prompt["id"])
-        return _montar_guardrails_str(guardrails_db_list)
+        return _montar_guardrails_str(resolver_guardrails_list(service, tenant_id, prompt_id))
 
     except Exception as e:
         print(f"[WARN] Falha ao carregar guardrails do banco para tenant {tenant_id}: {e}. Usando fallback local.")
@@ -137,35 +146,25 @@ def _carregar_fallback_local(tenant_id, tabela_calendario_str, hora_atual_str, d
 
 def carregar_operacional_prompt(tenant_id, tabela_calendario_str, hora_atual_str, data_hoje_iso, contexto_formatado):
     """
-    Função principal chamada pelo agente.
-    Tenta carregar do PostgreSQL. Se não houver vínculo para o tenant, usa o fallback local.
+    Função principal chamada pelo agente. Carrega EXCLUSIVAMENTE do banco.
+
+    Tenant sem prompt operacional vinculado não cai mais no arquivo local: isso é
+    erro de configuração, não estado normal de operação, e absorvê-lo em silêncio
+    fazia um cliente receber o texto genérico do projeto como se fosse o dele. O
+    erro sobe como PromptConfigurationError, com alerta identificando o tenant.
+
+    ATENÇÃO À ORDEM DOS `except` ABAIXO. `PromptConfigurationError` precisa vir
+    antes de `Exception`; se as duas trocarem de lugar, o erro de configuração
+    volta a ser engolido pelo fallback local e o defeito que este ticket corrige
+    reaparece sem fazer barulho nenhum. Há teste dedicado a essa ordem.
     """
     try:
         service = PromptManagerService(get_db_connection)
-        
-        # 1. Tenta buscar o prompt ativo vinculado ao tenant no banco
-        active_prompt = service.repository.get_active_prompt_by_tenant(tenant_id)
 
-        # 2. Se NÃO encontrou registro no banco para esse tenant, vai para o fallback local
-        if not active_prompt:
-            return _carregar_fallback_local(
-                tenant_id=tenant_id,
-                tabela_calendario_str=tabela_calendario_str,
-                hora_atual_str=hora_atual_str,
-                data_hoje_iso=data_hoje_iso,
-                contexto_formatado=contexto_formatado
-            )
+        prompt_template, guardrails_str = resolver_prompt_e_guardrails(
+            service, tenant_id, "operational", _montar_guardrails_str
+        )
 
-        # 3. Se encontrou no banco, carrega os guardrails da tabela N:N (prompt_guardrails)
-        prompt_template = active_prompt["conteudo"]
-        prompt_id = active_prompt["id"]
-
-        guardrails_db_list = service.repository.get_guardrails_by_prompt(prompt_id)
-
-        # Concatena o texto de todos os guardrails vinculados a esse prompt
-        guardrails_str = _montar_guardrails_str(guardrails_db_list)
-
-        # 4. Formata o template dinâmico retornado do banco
         return _aplicar_guardrails(
             prompt_template,
             guardrails_str,
@@ -176,9 +175,19 @@ def carregar_operacional_prompt(tenant_id, tabela_calendario_str, hora_atual_str
             contexto_formatado=contexto_formatado
         )
 
+    except PromptConfigurationError as e:
+        # Erro de CONFIGURAÇÃO: falha e alerta. Os guardrails globais já foram
+        # resolvidos e viajam na exceção — segurança não falha junto com o prompt.
+        print(
+            f"[ALERTA] Configuração ausente: tenant {tenant_id!r} não tem prompt "
+            f"'operational' vinculado. O atendimento NÃO será respondido até que um "
+            f"prompt seja vinculado no Painel Administrador. Detalhe: {e}"
+        )
+        raise
+
     except Exception as e:
-        # Em caso de qualquer falha de conexão com o banco, garante que a aplicação não cai
-        # e utiliza o arquivo local
+        # Falha de INFRAESTRUTURA (banco indisponível): mantém o atendimento em pé
+        # com o conteúdo local. É o único caminho que ainda lê os arquivos .md.
         print(f"[WARN] Falha ao carregar prompt do banco para tenant {tenant_id}: {e}. Usando fallback local.")
         return _carregar_fallback_local(
             tenant_id=tenant_id,
@@ -201,13 +210,21 @@ def carregar_institutional_prompt(tenant_id, contexto_formatado, historico_texto
     """
     try:
         service = PromptManagerService(get_db_connection)
-        institutional_prompt = service.repository.get_active_prompt_by_tenant(tenant_id, node_type="institutional")
 
-        if institutional_prompt:
-            guardrails_db_list = service.repository.get_guardrails_by_prompt(institutional_prompt["id"])
-            guardrails_str = _montar_guardrails_str(guardrails_db_list)
-            template = institutional_prompt["conteudo"]
-        else:
+        # Este nó NÃO exige vínculo (FR-008), então o resolver devolve template=None
+        # em vez de levantar erro quando não há vínculo institucional próprio.
+        template, guardrails_str = resolver_prompt_e_guardrails(
+            service, tenant_id, "institutional", _montar_guardrails_str
+        )
+
+        if template is None:
+            # Nível 2: sem vínculo próprio, usa o template local E herda os
+            # guardrails resolvidos pela cadeia do operational_node do tenant —
+            # comportamento preservado do FR-004 da feature anterior.
+            #
+            # A herança precisa ser explícita aqui: resolver pelo node_type
+            # 'institutional' devolveria apenas os globais, perdendo os guardrails
+            # próprios do prompt operacional do tenant.
             guardrails_str = carregar_guardrails(tenant_id)
             template = INSTITUTIONAL_PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -244,18 +261,27 @@ def carregar_chitchat_prompt(tenant_id):
     """
     try:
         service = PromptManagerService(get_db_connection)
-        chitchat_prompt = service.repository.get_active_prompt_by_tenant(tenant_id, node_type="chitchat")
 
-        if not chitchat_prompt:
-            chitchat_prompt = service.repository.get_default_prompt(node_type="chitchat")
+        # Nível 1: vínculo próprio. Este nó NÃO exige vínculo (FR-008), então o
+        # resolver devolve template=None em vez de levantar erro.
+        template, guardrails_str = resolver_prompt_e_guardrails(
+            service, tenant_id, "chitchat", _montar_guardrails_str
+        )
 
-        if chitchat_prompt:
-            guardrails_db_list = service.repository.get_guardrails_by_prompt(chitchat_prompt["id"])
-            guardrails_str = _montar_guardrails_str(guardrails_db_list)
-            template = chitchat_prompt["conteudo"]
-        else:
-            guardrails_str = GUARDRAIL_PATH.read_text(encoding="utf-8")
-            template = CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8")
+        if template is None:
+            # Nível 2: prompt padrão do banco, garantido pelo seed. Os guardrails
+            # desse prompt substituem os globais já resolvidos, porque agora há um
+            # prompt concreto ao qual eles podem estar vinculados.
+            default_prompt = service.repository.get_default_prompt(node_type="chitchat")
+            if default_prompt:
+                template = default_prompt["conteudo"]
+                guardrails_str = _montar_guardrails_str(
+                    service.repository.get_guardrails_by_prompt(default_prompt["id"])
+                )
+            else:
+                # Nível 3: sem vínculo e sem padrão. Com o seed em vigor isto não
+                # deveria ocorrer; mantido para não quebrar bancos ainda não semeados.
+                template = CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8")
 
         return _aplicar_guardrails(template, guardrails_str, tenant_id=tenant_id)
 

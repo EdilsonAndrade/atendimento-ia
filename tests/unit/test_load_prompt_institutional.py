@@ -2,10 +2,12 @@ import prompts.load_prompt as load_prompt_module
 
 
 class FakeRepo:
-    def __init__(self, institutional_prompt=None, operational_prompt=None, guardrails_by_prompt_id=None):
+    def __init__(self, institutional_prompt=None, operational_prompt=None, guardrails_by_prompt_id=None,
+                 global_guardrails=None):
         self._institutional_prompt = institutional_prompt
         self._operational_prompt = operational_prompt
         self._guardrails_by_prompt_id = guardrails_by_prompt_id or {}
+        self._global_guardrails = global_guardrails or []
 
     def get_active_prompt_by_tenant(self, tenant_id, node_type="operational"):
         if node_type == "institutional":
@@ -16,6 +18,11 @@ class FakeRepo:
 
     def get_guardrails_by_prompt(self, prompt_id):
         return self._guardrails_by_prompt_id.get(prompt_id, [])
+
+    def get_global_guardrails(self):
+        # A resolução passou a consultar o banco também no caminho "sem vínculo";
+        # antes esse caminho devolvia o guardrails.md sem nunca chegar aqui.
+        return self._global_guardrails
 
 
 class FakeService:
@@ -62,13 +69,21 @@ def test_falls_back_to_operational_guardrails_when_no_own_institutional_link(mon
     assert "Qual o horário?" in result
 
 
-def test_falls_back_to_local_guardrails_when_nothing_configured(monkeypatch):
-    repo = FakeRepo(institutional_prompt=None, operational_prompt=None)
+def test_uses_global_guardrails_from_db_when_nothing_linked(monkeypatch):
+    """Antes esta situação devolvia o conteúdo de guardrails.md. Agora resolve os
+    guardrails is_global do banco: o arquivo local deixou de ser fonte de runtime
+    (FR-006) e "global" passou a valer também para quem não tem vínculo (FR-001)."""
+    repo = FakeRepo(
+        institutional_prompt=None,
+        operational_prompt=None,
+        global_guardrails=[{"id": "gGlobal", "titulo": "Global", "conteudo": "Regra global do banco."}],
+    )
     patch_service(monkeypatch, repo)
 
     result = load_prompt_module.carregar_institutional_prompt(
         "tenant-sem-nada", contexto_formatado="ctx", historico_texto="hist", pergunta_usuario="Oi"
     )
 
-    assert "expert assistant for the business" in result
-    assert "REGRA ABSOLUTA" in result  # trecho de guardrails.md (fallback local)
+    assert "expert assistant for the business" in result  # template local ainda é usado neste nó
+    assert "Regra global do banco." in result
+    assert "REGRA ABSOLUTA" not in result  # guardrails.md não é mais lido em runtime

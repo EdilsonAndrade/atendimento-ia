@@ -7,14 +7,21 @@ from infrastructure.connection import get_db_connection
 from modules.prompt_manager.prompt_manager_service import (
     DefaultPromptNotConfiguredError,
     PromptManagerService,
+    PromptNotFoundError,
+    ResourceInUseError,
+    TenantsNotFoundError,
 )
 from modules.tenant.tenant_service import TenantService
 from app.schemas.prompt_manager import (
+    BulkTenantPromptLinkResponse,
+    BulkTenantPromptLinkSchema,
     GuardrailCreateSchema,
     NodeType,
     PromptCreateSchema,
+    PromptTenantsResponse,
     TenantPromptLinkSchema,
     TenantPromptOverviewResponse,
+    error_detail,
 )
 router = APIRouter(prefix="/prompt-manager", tags=["Prompt Manager"])
 
@@ -78,7 +85,15 @@ def update_prompt(prompt_id: str, payload: PromptCreateSchema):
 @router.delete("/prompts/{prompt_id}", status_code=204)
 def delete_prompt(prompt_id: str):
     service = PromptManagerService(get_db_connection)
-    deleted = service.delete_prompt(prompt_id)
+    try:
+        deleted = service.delete_prompt(prompt_id)
+    except ResourceInUseError as exc:
+        # 409: o prompt está vinculado a tenants ativos. Devolve os bloqueadores
+        # para a UI listar quem precisa ser realocado antes.
+        raise HTTPException(
+            status_code=409,
+            detail=error_detail(exc.code, str(exc), exc.blockers),
+        )
     if not deleted:
         raise HTTPException(status_code=404, detail="Prompt não encontrado")
 
@@ -96,9 +111,48 @@ def update_guardrail(guardrail_id: str, payload: GuardrailCreateSchema):
 @router.delete("/guardrails/{guardrail_id}", status_code=204)
 def delete_guardrail(guardrail_id: str):
     service = PromptManagerService(get_db_connection)
-    deleted = service.delete_guardrail(guardrail_id)
+    try:
+        deleted = service.delete_guardrail(guardrail_id)
+    except ResourceInUseError as exc:
+        # 409 com dois códigos distintos: GUARDRAIL_IS_GLOBAL (desmarcar global
+        # primeiro) e GUARDRAIL_IN_USE_BY_TENANTS (desassociar dos prompts). A
+        # ação que o admin precisa tomar é diferente em cada caso.
+        raise HTTPException(
+            status_code=409,
+            detail=error_detail(exc.code, str(exc), exc.blockers),
+        )
     if not deleted:
         raise HTTPException(status_code=404, detail="Guardrail não encontrado")
+
+
+@router.get(
+    "/prompts/{prompt_id}/tenants",
+    response_model=PromptTenantsResponse,
+    summary="Lista os tenants atualmente vinculados a um prompt",
+)
+def list_tenants_by_prompt(prompt_id: str):
+    service = PromptManagerService(get_db_connection)
+    try:
+        return service.list_tenants_by_prompt(prompt_id)
+    except PromptNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=error_detail(exc.code, str(exc)))
+
+
+@router.post(
+    "/link-tenants",
+    response_model=BulkTenantPromptLinkResponse,
+    summary="Vincula um prompt a vários tenants numa única operação (all-or-nothing)",
+)
+def link_tenants_bulk(payload: BulkTenantPromptLinkSchema):
+    service = PromptManagerService(get_db_connection)
+    try:
+        return service.link_tenants_bulk(
+            payload.prompt_id, payload.tenant_ids, payload.custom_content_override
+        )
+    except PromptNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=error_detail(exc.code, str(exc)))
+    except TenantsNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=error_detail(exc.code, str(exc), exc.blockers))
 
 @router.get(
     "/tenant/{tenant_id}",

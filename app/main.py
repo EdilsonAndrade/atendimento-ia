@@ -27,7 +27,12 @@ from modules.token.token_verify import verificar_token
 from app.core.limiter import limiter
 from infrastructure.connection import get_db_connection
 from modules.prompt_manager.prompt_manager_repository import PromptManagerRepository
-from prompts.load_prompt import CHITCHAT_PROMPT_PATH
+from prompts.load_prompt import (
+    CHITCHAT_PROMPT_PATH,
+    GUARDRAIL_PATH,
+    INSTITUTIONAL_PROMPT_PATH,
+    PROMPT_PATH,
+)
 # COMENTÁRIO: Carrega as variáveis declaradas no arquivo .env
 load_dotenv()
 
@@ -121,29 +126,53 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.on_event("startup")
 def seed_node_type_prompts() -> None:
-    """EDI-42: garante o prompt padrão de chitchat e copia o institutional dos
-    tenants já configurados, uma única vez por subida do processo (idempotente —
-    ver PromptManagerRepository.seed_missing_node_prompts). Envolvido em
-    try/except para que uma falha de banco no boot não impeça a API de subir,
-    mesmo padrão já usado pelas demais inicializações globais deste projeto.
+    """Semeia o mínimo que o banco precisa ter, uma vez por subida do processo.
 
-    IMPORTANTE: se já existir um prompt padrão de chitchat no banco,
-    seed_missing_node_prompts() não grava nada — o conteúdo abaixo só é usado
-    na primeira vez (banco vazio). Por isso o template é gravado CRU, com o
-    placeholder "{guardrails}" intacto (sem .format() aqui): assim
-    carregar_chitchat_prompt() consegue injetar dinamicamente os guardrails
-    vinculados a esse prompt no banco a cada chamada, em vez de reaproveitar
-    um texto congelado do guardrails.md local.
+    EDI-42: prompt padrão de chitchat e cópia do institutional para tenants já
+    configurados. EDI-43: um prompt semente por node_type e um guardrail global,
+    ambos a partir dos arquivos .md do projeto.
+
+    Os .md deixaram de ser fonte de runtime (o agente lê só do banco) e passaram
+    a ser fonte de SEED. É o que permite o runtime ler exclusivamente do banco:
+    como o seed garante o mínimo, o que a tela mostra passa a ser exatamente o
+    que o agente recebe.
+
+    IMPORTANTE: o conteúdo é gravado CRU, com o placeholder "{guardrails}"
+    intacto (nenhum .format() aqui). Se o texto fosse renderizado no seed, os
+    guardrails congelariam no conteúdo e deixariam de ser injetados a cada
+    atendimento — que é justamente o mecanismo que permite ao admin editar um
+    guardrail e ver o efeito sem reeditar todos os prompts.
+
+    Idempotente: seed_missing_node_prompts() só cria o que ainda não existe e
+    nunca sobrescreve edição do admin. O try/except impede que uma falha de banco
+    no boot derrube a subida da API — mesmo padrão das demais inicializações.
     """
     try:
-        chitchat_default_conteudo = CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8")
         repository = PromptManagerRepository(get_db_connection)
         repository.seed_missing_node_prompts(
             chitchat_default_titulo="Chitchat - Padrão",
-            chitchat_default_conteudo=chitchat_default_conteudo,
+            chitchat_default_conteudo=CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8"),
+            node_prompt_seeds={
+                "operational": {
+                    "titulo": "Operacional - Padrão",
+                    "conteudo": PROMPT_PATH.read_text(encoding="utf-8"),
+                },
+                "institutional": {
+                    "titulo": "Institucional - Padrão",
+                    "conteudo": INSTITUTIONAL_PROMPT_PATH.read_text(encoding="utf-8"),
+                },
+                "chitchat": {
+                    "titulo": "Chitchat - Padrão",
+                    "conteudo": CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8"),
+                },
+            },
+            global_guardrail_seed={
+                "titulo": "Guardrails da Plataforma",
+                "conteudo": GUARDRAIL_PATH.read_text(encoding="utf-8"),
+            },
         )
     except Exception as e:
-        print(f"⚠️ Alerta: Falha ao rodar o seed de prompts por node_type (EDI-42): {e}")
+        print(f"⚠️ Alerta: Falha ao rodar o seed de prompts por node_type: {e}")
 
 
 # COMENTÁRIO: Lê as variáveis de ambiente com fallback para padrões seguros

@@ -25,6 +25,63 @@ class TenantRepository:
             'created_at': new_tenant[4]
         }
 
+    def create_tenant_with_prompt(self, tenant_data, prompt_id) -> dict:
+        """Cria o tenant E o vínculo com o prompt operacional numa ÚNICA transação.
+
+        Por que os dois INSERT vivem juntos aqui, apesar de `tenant_prompts` ser
+        conceitualmente do módulo prompt_manager: um tenant existir sem vínculo de
+        prompt é exatamente o estado que o EDI-43 elimina. Se os dois INSERT forem
+        separados em duas transações, existe uma janela — curta, mas real — em que
+        esse estado proibido está gravado no banco, e a compensação (apagar o
+        tenant) pode ela própria falhar.
+
+        NÃO separe estes dois INSERT em chamadas independentes "para respeitar a
+        fronteira do módulo": isso reabre a janela que este método existe para
+        fechar. A validação do prompt acontece antes, no service, de modo que os
+        erros comuns (prompt inexistente, node_type errado) nunca chegam aqui.
+        """
+        cursor = self.db_connection.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, created_at)
+                VALUES (%s, %s, %s, %s, NOW())
+                RETURNING id, name, google_calendar_id, allowed_domains, created_at;
+                """,
+                (
+                    tenant_data['tenant_id'],
+                    tenant_data['name'],
+                    tenant_data['google_calendar_id'],
+                    tenant_data['allowed_domains'],
+                ),
+            )
+            new_tenant = cursor.fetchone()
+
+            cursor.execute(
+                """
+                INSERT INTO tenant_prompts (tenant_id, prompt_id, is_active)
+                VALUES (%s, %s, TRUE)
+                ON CONFLICT (tenant_id, prompt_id)
+                DO UPDATE SET is_active = TRUE, updated_at = NOW();
+                """,
+                (tenant_data['tenant_id'], prompt_id),
+            )
+
+            self.db_connection.commit()
+        except Exception:
+            self.db_connection.rollback()
+            raise
+        finally:
+            cursor.close()
+
+        return {
+            'id': new_tenant[0],
+            'name': new_tenant[1],
+            'google_calendar_id': new_tenant[2],
+            'allowed_domains': new_tenant[3],
+            'created_at': new_tenant[4],
+        }
+
     def get_tenant(self, tenant_id) -> dict:
         # Logic to retrieve a tenant by ID from the database
         get_query = "SELECT id, name, google_calendar_id, allowed_domains, created_at FROM tenants WHERE id = %s;"
