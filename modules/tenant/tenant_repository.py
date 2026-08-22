@@ -1,8 +1,19 @@
 from infrastructure.connection import get_db_connection
 
 class TenantRepository:
-    def __init__(self):
-        self.db_connection = get_db_connection()  # Initialize the repository with a database connection
+    def __init__(self, connection=None):
+        """Se `connection` for informada, este repositório passa a operar sobre
+        ela em vez de abrir a sua própria — usado pela exclusão em cascata
+        (EDI-45) para participar da mesma transação de `PromptManagerRepository`.
+        Nesse caso, quem controla commit/rollback é o dono da conexão (o
+        `conn.transaction()` externo), não este repositório.
+        """
+        self._owns_connection = connection is None
+        self.db_connection = connection or get_db_connection()
+
+    def _commit(self):
+        if self._owns_connection:
+            self.db_connection.commit()
 
     def create_tenant(self, tenant_data) -> dict:
         # Logic to create a new tenant in the database
@@ -14,7 +25,7 @@ class TenantRepository:
         cursor = self.db_connection.cursor()
         cursor.execute(create_query, (tenant_data['tenant_id'], tenant_data['name'], tenant_data['google_calendar_id'], tenant_data['allowed_domains']))
         new_tenant = cursor.fetchone()
-        self.db_connection.commit()
+        self._commit()
         cursor.close()
         # COMENTÁRIO: Retorna o novo tenant criado como um dicionário
         return {
@@ -67,9 +78,10 @@ class TenantRepository:
                 (tenant_data['tenant_id'], prompt_id),
             )
 
-            self.db_connection.commit()
+            self._commit()
         except Exception:
-            self.db_connection.rollback()
+            if self._owns_connection:
+                self.db_connection.rollback()
             raise
         finally:
             cursor.close()
@@ -110,7 +122,7 @@ class TenantRepository:
         cursor = self.db_connection.cursor()
         cursor.execute(update_query, (tenant_data['name'], tenant_data['google_calendar_id'], tenant_data['allowed_domains'], tenant_id))
         updated_tenant = cursor.fetchone()
-        self.db_connection.commit()
+        self._commit()
         cursor.close()
         if updated_tenant:
             return {
@@ -123,18 +135,30 @@ class TenantRepository:
             }
         return None
 
-    def search_tenants(self, term: str, limit: int = 20) -> list:
-        # Busca parcial e case-insensitive por id ou name
-        search_query = """
-        SELECT id, name, google_calendar_id, allowed_domains, created_at, updated_at
-        FROM tenants
-        WHERE id ILIKE %s OR name ILIKE %s
-        ORDER BY name
-        LIMIT %s;
-        """
-        pattern = f"%{term}%"
+    def list_tenants(self, term: str | None, limit: int = 20, offset: int = 0) -> list:
+        """Lista tenants paginada. Sem `term`, devolve todos (ordenado por
+        nome); com `term`, filtra por match parcial case-insensitive em id/name."""
+        if term:
+            query = """
+            SELECT id, name, google_calendar_id, allowed_domains, created_at, updated_at
+            FROM tenants
+            WHERE id ILIKE %s OR name ILIKE %s
+            ORDER BY name
+            LIMIT %s OFFSET %s;
+            """
+            pattern = f"%{term}%"
+            params = (pattern, pattern, limit, offset)
+        else:
+            query = """
+            SELECT id, name, google_calendar_id, allowed_domains, created_at, updated_at
+            FROM tenants
+            ORDER BY name
+            LIMIT %s OFFSET %s;
+            """
+            params = (limit, offset)
+
         cursor = self.db_connection.cursor()
-        cursor.execute(search_query, (pattern, pattern, limit))
+        cursor.execute(query, params)
         rows = cursor.fetchall()
         cursor.close()
         return [
@@ -149,12 +173,26 @@ class TenantRepository:
             for row in rows
         ]
 
+    def count_tenants(self, term: str | None) -> int:
+        cursor = self.db_connection.cursor()
+        if term:
+            pattern = f"%{term}%"
+            cursor.execute(
+                "SELECT COUNT(*) FROM tenants WHERE id ILIKE %s OR name ILIKE %s;",
+                (pattern, pattern),
+            )
+        else:
+            cursor.execute("SELECT COUNT(*) FROM tenants;")
+        total = cursor.fetchone()[0]
+        cursor.close()
+        return total
+
     def delete_tenant(self, tenant_id) -> int | None:
         # Logic to delete a tenant from the database
         delete_query = "DELETE FROM tenants WHERE id = %s RETURNING id;"
         cursor = self.db_connection.cursor()
         cursor.execute(delete_query, (tenant_id,))
         deleted_tenant = cursor.fetchone()
-        self.db_connection.commit()
+        self._commit()
         cursor.close()
         return deleted_tenant[0] if deleted_tenant else None
