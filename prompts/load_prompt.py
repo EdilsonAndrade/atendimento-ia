@@ -16,6 +16,7 @@ INSTITUTIONAL_PROMPT_PATH = PROMPTS_DIR / "institutional_prompt.md"
 CHITCHAT_PROMPT_PATH = PROMPTS_DIR / "chitchat_prompt.md"
 
 GUARDRAILS_PLACEHOLDER = "{guardrails}"
+CONTEXTO_PLACEHOLDER = "{contexto_formatado}"
 
 # Casa apenas placeholders simples do tipo {nome_da_chave}. Chaves com qualquer
 # outro caractere (ex: o {"nome": "x"} de um exemplo JSON dentro do prompt) não
@@ -80,19 +81,33 @@ def _montar_guardrails_str(guardrails_list) -> str:
 
 def _aplicar_guardrails(template: str, guardrails_str: str, **valores) -> str:
     """
-    Renderiza o template e garante que os guardrails sempre cheguem ao prompt final.
+    Renderiza o template e garante que os guardrails e o contexto do RAG sempre
+    cheguem ao prompt final.
 
     Se o template não tiver o placeholder {guardrails} (caso dos prompts gravados
     no banco antes desta correção, que já vieram com os guardrails "assados" no
     texto), os guardrails resolvidos são anexados ao final em vez de sumirem sem
     aviso — que era o comportamento anterior do str.format().
+
+    Mesma rede de segurança para {contexto_formatado}: um prompt de tenant escrito
+    à mão no banco pode omitir esse placeholder (aconteceu em produção — o tenant
+    tinha uma seção "Contexto da Conversa" só com {historico_texto}, sem o bloco de
+    conhecimento). Sem isso, o RAG inteiro é descartado em silêncio pelo
+    _render_prompt e o modelo responde só com o que está escrito no prompt (ex.:
+    repetindo os serviços do few-shot example), nunca com a base de conhecimento.
     """
-    tem_placeholder = GUARDRAILS_PLACEHOLDER in template
+    tem_guardrails_placeholder = GUARDRAILS_PLACEHOLDER in template
+    tem_contexto_placeholder = CONTEXTO_PLACEHOLDER in template
     renderizado = _render_prompt(template, guardrails=guardrails_str, **valores)
 
-    if guardrails_str and not tem_placeholder:
+    if guardrails_str and not tem_guardrails_placeholder:
         print("[WARN] Prompt sem o placeholder {guardrails}; anexando os guardrails ao final.")
         renderizado = f"{renderizado}\n\n{guardrails_str}"
+
+    contexto_formatado = valores.get("contexto_formatado")
+    if contexto_formatado and not tem_contexto_placeholder:
+        print("[WARN] Prompt sem o placeholder {contexto_formatado}; anexando o contexto da base de conhecimento ao final.")
+        renderizado = f"{renderizado}\n\n--- CONTEXT FROM KNOWLEDGE BASE ---\n{contexto_formatado}"
 
     return renderizado
 

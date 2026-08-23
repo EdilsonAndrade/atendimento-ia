@@ -87,3 +87,26 @@ def test_uses_global_guardrails_from_db_when_nothing_linked(monkeypatch):
     assert "expert assistant for the business" in result  # template local ainda é usado neste nó
     assert "Regra global do banco." in result
     assert "REGRA ABSOLUTA" not in result  # guardrails.md não é mais lido em runtime
+
+
+def test_appends_context_when_tenant_prompt_omits_the_placeholder(monkeypatch):
+    """Bug real de produção: o prompt institucional do tenant no banco tinha uma
+    seção "Contexto da Conversa" só com {historico_texto}, sem {contexto_formatado}.
+    O RAG (que continha a resposta certa) era descartado em silêncio e o modelo
+    respondia repetindo só o few-shot example do próprio prompt."""
+    institutional_prompt = {
+        "id": "pInst",
+        "titulo": "Institutional Tenant",
+        "conteudo": "Inst {guardrails}\n\nHistórico: {historico_texto}\n\nPergunta: {pergunta_usuario}",
+    }
+    repo = FakeRepo(institutional_prompt=institutional_prompt)
+    patch_service(monkeypatch, repo)
+
+    result = load_prompt_module.carregar_institutional_prompt(
+        "tenant-3",
+        contexto_formatado="Automação de Processos e Integrações: pipelines de dados.",
+        historico_texto="hist",
+        pergunta_usuario="Vocês fazem automação?",
+    )
+
+    assert "Automação de Processos e Integrações" in result
