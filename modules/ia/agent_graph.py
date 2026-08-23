@@ -247,6 +247,7 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "'estes sao seus produtos?' -> INSTITUTIONAL\n"
         "'ue achei q eram produtos de marketing' -> INSTITUTIONAL\n"
         "'oi, quanto custa o plano?' -> INSTITUTIONAL\n"
+        "'ta bem, quais serviços vcs tem' -> INSTITUTIONAL\n"
         "'ola' -> CHITCHAT\n"
         "'tudo bem?' -> CHITCHAT\n"
         "'obrigado, ate mais' -> CHITCHAT\n"
