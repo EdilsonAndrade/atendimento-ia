@@ -214,7 +214,11 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "(e.g., providing a barber name, time, date, service, or confirmation).\n"
         "2. 'INSTITUTIONAL': Questions about company address, policies, rules, products, services, "
         "features, or pricing/plans.\n"
-        "3. 'CHITCHAT': ONLY standalone greetings ('olá', 'tudo bem'), farewells, or off-topic talk.\n\n"
+        "3. 'CHITCHAT': ONLY when the ENTIRE message is small talk (greeting, farewell, "
+        "'tudo bem?', thanks) with NO question about the business, products, services, "
+        "pricing, or booking attached. If the message mixes small talk with ANY real "
+        "question — even briefly, e.g. 'estou bem, obrigado, o que vocês vendem?' — "
+        "classify by the real question's intent (INSTITUTIONAL or OPERATIONAL), NEVER CHITCHAT.\n\n"
         "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'."
     ))
     
