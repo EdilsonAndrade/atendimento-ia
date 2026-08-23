@@ -1,6 +1,7 @@
 # modules/ia/agent_graph.py
 import psycopg
 import os
+import re
 from typing import TypedDict, Annotated, Sequence
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -49,7 +50,10 @@ GROUNDEDNESS_RULE = (
     "questions about the business name, services, prices, professionals, or history. NEVER hallucinate, invent, or assume "
     "a business name, service, or professional that is not explicitly present in that context — including generic examples "
     "like 'barbearia', 'André', or any other placeholder business. If the conversation history conflicts with the knowledge "
-    "base context, the knowledge base always wins — it is the current source of truth, the history may be stale.\n"
+    "base context, the knowledge base always wins — it is the current source of truth, the history may be stale.\n\n"
+    "SELF-CITATION RULE (CRITICAL): Your own previous messages in this conversation are NEVER evidence that a "
+    "tool was called or that an action happened. If you cannot see an actual tool result in the CURRENT context, "
+    "the action did not happen — even if an earlier message in the history claimed otherwise.\n"
 )
 
 # Rede de segurança do chitchat_node. Diferente dos nós institutional/operational,
@@ -88,6 +92,11 @@ BOOKING_INTEGRITY_RULE = (
     "returned that result in this same turn. If the user asks about availability or wants to book, "
     "call the appropriate tool before answering — never answer from memory, from the conversation "
     "history, or from the knowledge base.\n\n"
+    "NO NARRATION RULE (CRITICAL): NEVER announce that you are about to check, consult, or verify "
+    "something ('vou verificar', 'um momento', 'deixa eu consultar a agenda', 'verificando a "
+    "disponibilidade') and then answer as if that check already happened. Either call the tool "
+    "silently in this same turn and wait for its real result, or ask the user a question — never "
+    "narrate an action you have not actually taken yet.\n\n"
     "CALENDAR PRIVACY RULE (CRITICAL): When reading calendar data, you will see the title, name, or "
     "description of events belonging to other clients or internal blocks. It is STRICTLY FORBIDDEN to "
     "reveal that title, name, description, or reason to the current user — refer to any such slot "
@@ -101,6 +110,59 @@ BOOKING_INTEGRITY_RULE = (
     "atendimento é feito um agendamento por vez e pergunte qual é o primeiro nome/horário que o "
     "cliente deseja agendar agora.\n"
 )
+
+# --- Guardrails de SAÍDA do operational_node (pós-invocação do LLM) ---------
+# Duas falhas reais já observadas em produção, ambas com a mesma causa raiz
+# (o modelo narra/completa uma ação de agenda em texto em vez de USAR o canal
+# nativo de tool calling — mais comum quando o "thinking" está desabilitado):
+#
+# 1. TOOL_CALL_MARKUP_LEAK_PATTERN: o modelo serializa a chamada de ferramenta
+#    como texto solto no `content` (ex.: tokens especiais do DeepSeek tipo
+#    "<｜tool▁calls▁begin｜>", "invoke name=..."), então resposta_ia.tool_calls
+#    fica vazio e o grafo termina o turno mandando esse lixo pro WhatsApp.
+# 2. BOOKING_CONFIRMATION_CLAIM_PATTERN: o modelo afirma em texto que
+#    consultou/confirmou/reservou um horário sem nenhuma ToolMessage real no
+#    turno — cliente sai achando que tem agendamento que nunca foi criado.
+TOOL_CALL_MARKUP_LEAK_PATTERN = re.compile(
+    r"DSML|<\｜?\|?tool[_▁]calls|<\|?tool_calls|invoke\s+name=|<function_calls>",
+    re.IGNORECASE,
+)
+BOOKING_CONFIRMATION_CLAIM_PATTERN = re.compile(
+    r"est[aá]\s+reservad|agendamento\s+confirmad|hor[aá]rio\s+(est[aá]\s+)?confirmad|"
+    r"foi\s+agendad|est[aá]\s+marcad|temos\s+disponibilidade|hor[aá]rio\s+(est[aá]\s+)?livre|"
+    r"consultando\s+a\s+agenda|verificando\s+a\s+(agenda|disponibilidade)",
+    re.IGNORECASE,
+)
+
+
+def _resposta_sem_lastro_de_tool(resposta_ia, mensagens_chat) -> str | None:
+    """
+    Detecta as duas falhas descritas acima numa resposta SEM tool_calls reais.
+    Retorna o nome do guardrail acionado ("markup_leak" ou "unfounded_claim"),
+    ou None se a resposta estiver ok. Uma resposta com tool_calls válidos nunca
+    aciona isso (ela ainda vai passar pelo tools_condition normalmente).
+    """
+    if getattr(resposta_ia, "tool_calls", None):
+        return None
+
+    conteudo = resposta_ia.content if isinstance(resposta_ia.content, str) else ""
+    if not conteudo:
+        return None
+
+    if TOOL_CALL_MARKUP_LEAK_PATTERN.search(conteudo):
+        return "markup_leak"
+
+    if BOOKING_CONFIRMATION_CLAIM_PATTERN.search(conteudo):
+        # Só é violação se não houve NENHUM resultado de tool desde a última
+        # pergunta do usuário — anda pra trás e para no primeiro Human ou Tool.
+        for m in reversed(mensagens_chat):
+            if isinstance(m, ToolMessage):
+                return None
+            if isinstance(m, HumanMessage):
+                break
+        return "unfounded_claim"
+
+    return None
 
 # Instâncias globais dos serviços de infraestrutura.
 # Envolvidas em try/except (mesmo padrão do graph_app em chat.py) para que a
@@ -146,15 +208,21 @@ class AgentState(TypedDict):
 # ============================================================================
 
 # Inicializamos o modelo local Llama 3 (temperature=0 para decisões lógicas)
+# NOTA (thinking desabilitado): em algum momento anterior o "thinking" foi desligado
+# de propósito porque o modelo estava contando piadas fora de contexto no chitchat_node.
+# Testando agora com thinking HABILITADO (DeepSeek V4 Pro + CHITCHAT_NO_KNOWLEDGE_RULE já
+# reforçada) — é o passo de deliberação que faltava para o modelo decidir chamar a tool em
+# vez de narrar/alucinar o resultado em texto. Se o comportamento de piada fora de contexto
+# voltar, descomentar o bloco "thinking" abaixo para religar o modo antigo.
 llm = ChatOpenAI(
-    model=llm_model, 
+    model=llm_model,
     api_key=api_key,
     base_url="https://api.deepseek.com/v1", # Garanta que a base URL aponta para a API do DeepSeek
-    temperature=0, 
+    temperature=0,
     extra_body={
-        "thinking":{
-            "type": "disabled"
-        }
+        # "thinking": {
+        #     "type": "disabled"
+        # }
     }
 )
 
@@ -203,6 +271,25 @@ def get_active_tools(tenant_id: str):
     )
     return active_tools
     
+def _intencao_anterior_nao_chitchat(messages) -> str | None:
+    """
+    Varre o histórico de trás pra frente procurando a última decisão do próprio
+    routing_agent (persistida como AIMessage "Routing decision: X") que não seja
+    CHITCHAT. Usado para: (1) dar contexto de continuação ao roteador quando a
+    última mensagem do usuário é um reparo conversacional sem tópico próprio
+    ("não entendi", "?", "como assim"); (2) servir de fallback quando o LLM
+    devolve uma resposta que não bate com nenhuma das 3 classes esperadas —
+    nesse caso NUNCA cair em CHITCHAT por default, que é o único nó sem RAG e
+    sem tools (o pior destino possível para uma mensagem ambígua).
+    """
+    for m in reversed(messages):
+        if isinstance(m, AIMessage) and str(m.content).startswith("Routing decision:"):
+            decisao_anterior = str(m.content).replace("Routing decision:", "").strip()
+            if decisao_anterior in ("OPERATIONAL", "INSTITUTIONAL"):
+                return decisao_anterior
+    return None
+
+
 # ============================================================================
 # PASSO 3: NÓ ROTEADOR COM GUARDRAIL DE CONTEXTO DUAL (routing_agent)
 # ============================================================================
@@ -222,6 +309,10 @@ def routing_agent(state: AgentState, config: RunnableConfig):
     # mesmo fora de contexto de agendamento (ex: "informações sobre nossos
     # serviços, planos ou agendamentos" fazia qualquer resposta do cliente cair
     # em operational_node, inclusive perguntas institucionais).
+    # Última decisão não-CHITCHAT do próprio roteador, usada como contexto de
+    # continuação (ver _intencao_anterior_nao_chitchat) e como fallback seguro.
+    intencao_anterior = _intencao_anterior_nao_chitchat(state["messages"])
+
     # Aciona o LLM passando as mensagens nativas
     system_prompt = SystemMessage(content=(
         "You are an orchestrator router for a business booking application.\n"
@@ -238,9 +329,16 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "'tudo bem?', thanks) with NO question about the business, products, services, "
         "pricing, or booking attached. If the message mixes small talk with ANY real "
         "question — even briefly, e.g. 'estou bem, obrigado, o que vocês vendem?' — "
-        "classify by the real question's intent (INSTITUTIONAL or OPERATIONAL), NEVER CHITCHAT.\n\n"
+        "classify by the real question's intent (INSTITUTIONAL or OPERATIONAL), NEVER CHITCHAT.\n"
+        "4. 'CONTINUATION': If the last message carries NO topic of its own — a conversational "
+        "repair signal ('não entendi', 'como assim?', 'hein?', 'oi?', 'quê?'), a bare "
+        "acknowledgement ('ok', 'sim', 'isso'), or a fragment only meaningful against the "
+        "previous turn — it is NOT CHITCHAT. Classify it the SAME as PREVIOUS TURN INTENT "
+        "(given below). This takes priority over rule 3.\n\n"
         "TIE-BREAKER: CHITCHAT is the LAST RESORT. If the message could plausibly be read as a "
-        "question about the business, choose INSTITUTIONAL over CHITCHAT.\n\n"
+        "question about the business, or as a continuation of the previous turn, choose "
+        "INSTITUTIONAL/OPERATIONAL over CHITCHAT.\n\n"
+        f"PREVIOUS TURN INTENT: {intencao_anterior or 'none (start of conversation)'}\n\n"
         "EXAMPLES (last user message -> class):\n"
         "'de nada, o que vcs vendem?' -> INSTITUTIONAL\n"
         "'estou bem, obrigado, o q vcs vendem?' -> INSTITUTIONAL\n"
@@ -251,10 +349,12 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "'ola' -> CHITCHAT\n"
         "'tudo bem?' -> CHITCHAT\n"
         "'obrigado, ate mais' -> CHITCHAT\n"
-        "'quero marcar pra amanha as 15h' -> OPERATIONAL\n\n"
+        "'quero marcar pra amanha as 15h' -> OPERATIONAL\n"
+        "'não entendi' (PREVIOUS TURN INTENT: OPERATIONAL) -> OPERATIONAL\n"
+        "'como assim?' (PREVIOUS TURN INTENT: INSTITUTIONAL) -> INSTITUTIONAL\n\n"
         "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'."
     ))
-    
+
     # 3. Para o roteador, preserva a sequência AI(tool_calls)->ToolMessage e sanitiza.
     # Isso evita o erro 400 quando há tool_calls no histórico persistido.
     historico_com_tools = [
@@ -281,9 +381,15 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         decisao = "OPERATIONAL"
     elif "INSTITUTIONAL" in decisao:
         decisao = "INSTITUTIONAL"
-    else:
+    elif "CHITCHAT" in decisao:
         decisao = "CHITCHAT"
-    
+    else:
+        # Resposta do LLM não bateu com nenhuma das 3 classes esperadas: herda a
+        # última intenção não-CHITCHAT em vez de cair às cegas em chitchat_node
+        # (único nó sem RAG e sem tools — o pior destino possível quando o
+        # roteador não conseguiu decidir).
+        decisao = intencao_anterior or "INSTITUTIONAL"
+
     print(f"\n --- [NÓ: routing_agent] Roteador definiu a intenção: [{decisao}] ---")
     return {"messages": [AIMessage(content=f"Routing decision: {decisao}")]}
 
@@ -446,6 +552,45 @@ def operational_node(state: AgentState, config: RunnableConfig):
 
     log_llm_prompt("operational_node", tenant_id, mensagens_para_ia)
     resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
+
+    # GUARDRAIL DE SAÍDA: resposta sem tool_calls que (a) vazou markup interno de
+    # tool-calling no content, ou (b) afirma um resultado de agenda (consultado,
+    # confirmado, reservado) sem nenhuma ToolMessage real neste turno. Em vez de
+    # entregar isso ao cliente, força uma nova tentativa com tool_choice="required"
+    # — só quando o tenant tem tools de agenda ativas, já que os dois cenários só
+    # fazem sentido nesse contexto.
+    guardrail_acionado = _resposta_sem_lastro_de_tool(resposta_ia, historico_limitado)
+    if guardrail_acionado and all_active_tools:
+        print(
+            f" -> 🛡️ [GUARDRAIL] Resposta sem tool_calls reprovada ({guardrail_acionado}): "
+            f"{resposta_ia.content!r}. Forçando nova tentativa com tool_choice='required'."
+        )
+        llm_forcado = llm.bind_tools(all_active_tools, tool_choice="required", parallel_tool_calls=False)
+        resposta_ia = llm_forcado.invoke(mensagens_para_ia)
+
+        # Se mesmo forçado o modelo ainda não produziu tool_calls (ou repetiu o
+        # vazamento), não arriscamos mandar o conteúdo ao cliente — substitui por
+        # um pedido de repetição e loga como erro para investigação.
+        if not (hasattr(resposta_ia, "tool_calls") and resposta_ia.tool_calls):
+            print(
+                f" -> ❌ [GUARDRAIL] tool_choice='required' não corrigiu a resposta "
+                f"(tenant_id={tenant_id}). Bloqueando envio do conteúdo original."
+            )
+            resposta_ia = AIMessage(content=(
+                "Desculpa, tive um problema para verificar isso agora. Pode repetir "
+                "sua última mensagem, por favor?"
+            ))
+    elif guardrail_acionado == "markup_leak":
+        # Vazamento de markup sem nenhuma tool ativa pra forçar (cenário raro:
+        # tenant sem agenda configurada). Não há o que re-tentar — só barra o lixo.
+        print(
+            f" -> ❌ [GUARDRAIL] Vazamento de markup sem tools ativas (tenant_id={tenant_id}). "
+            f"Bloqueando envio do conteúdo original: {resposta_ia.content!r}"
+        )
+        resposta_ia = AIMessage(content=(
+            "Desculpa, tive um problema para processar isso agora. Pode repetir "
+            "sua última mensagem, por favor?"
+        ))
 
     # BLINDAGEM: Se o modelo ignorar a instrução do prompt e ainda assim mandar várias
     # tool calls de uma vez, mantemos apenas a primeira. O ideal é que o PROMPT já
