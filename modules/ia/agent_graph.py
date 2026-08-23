@@ -283,7 +283,7 @@ def routing_agent(state: AgentState, config: RunnableConfig):
     else:
         decisao = "CHITCHAT"
     
-    print(f" -> Roteador definiu a intenção: [{decisao}]")
+    print(f"\n --- [NÓ: routing_agent] Roteador definiu a intenção: [{decisao}] ---")
     return {"messages": [AIMessage(content=f"Routing decision: {decisao}")]}
 
 
@@ -298,7 +298,7 @@ def route_decision(state: AgentState):
     print("\n --- [ARESTA CONDICIONAL] Calculando próximo nó do grafo... ---")
     # 1. Pegamos a última mensagem que o routing_agent salvou no estado
     ultima_mensagem = state["messages"][-1].content
-    
+    print(f"\n --- [ARESTA CONDICIONAL] Última mensagem: [{ultima_mensagem}] ---")
     # 2. Avaliamos o texto da decisão para escolher a rota
     if "OPERATIONAL" in ultima_mensagem:
         print(" -> Rota escolhida: Ir para o nó de dados operacionais.")
