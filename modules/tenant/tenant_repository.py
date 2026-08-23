@@ -99,7 +99,8 @@ class TenantRepository:
             'name': new_tenant[1],
             'google_calendar_id': new_tenant[2],
             'allowed_domains': new_tenant[3],
-            'created_at': new_tenant[4],
+            'scheduling_enabled': new_tenant[4],
+            'created_at': new_tenant[5],
         }
 
     def get_tenant(self, tenant_id) -> dict:
