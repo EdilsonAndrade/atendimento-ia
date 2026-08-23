@@ -59,12 +59,30 @@ GROUNDEDNESS_RULE = (
 # em qualquer texto que mencionasse essas palavras fora de contexto de agenda
 # (ex.: "não tenho esse link disponível"). Aqui a política é declarativa e
 # condicionada à capacidade real do tenant, não a um casamento de substring.
+#
+# A privacidade de agenda (não revelar dono/motivo de evento de outro cliente)
+# e a regra de um agendamento por vez viviam no guardrail GLOBAL — ou seja, todo
+# tenant recebia essas regras mesmo sem nenhuma tool de agendamento habilitada
+# (ex.: o simplificandoai, que não agenda nada). Migradas para cá para que só
+# cheguem ao modelo quando existe agenda real para proteger.
 BOOKING_INTEGRITY_RULE = (
     "BOOKING INTEGRITY RULE (CRITICAL): Never state that a time slot is busy, free, or already "
     "booked, and never confirm that a booking was made, unless a calendar tool call has just "
     "returned that result in this same turn. If the user asks about availability or wants to book, "
     "call the appropriate tool before answering — never answer from memory, from the conversation "
-    "history, or from the knowledge base.\n"
+    "history, or from the knowledge base.\n\n"
+    "CALENDAR PRIVACY RULE (CRITICAL): When reading calendar data, you will see the title, name, or "
+    "description of events belonging to other clients or internal blocks. It is STRICTLY FORBIDDEN to "
+    "reveal that title, name, description, or reason to the current user — refer to any such slot "
+    "EXCLUSIVELY as \"(ocupado)\". If the user asks directly about the reason, whose event it is, or "
+    "what is scheduled during an unavailable time, reply EXACTLY with this phrase: \"Este é um horário "
+    "ocupado e, por questões de segurança e privacidade, o sistema não me fornece os detalhes internos "
+    "dessa reserva.\"\n\n"
+    "REGRA DE MÚLTIPLOS AGENDAMENTOS (CRITICAL): Se o cliente solicitar agendamentos para mais de uma "
+    "pessoa ou mais de um horário na mesma mensagem (ex: para ele, filho, esposa), NÃO chame a "
+    "ferramenta de agendamento mais de uma vez neste turno. Responda em texto explicando que o "
+    "atendimento é feito um agendamento por vez e pergunte qual é o primeiro nome/horário que o "
+    "cliente deseja agendar agora.\n"
 )
 
 # Instâncias globais dos serviços de infraestrutura.
@@ -194,7 +212,8 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "CLASSIFICATION RULES:\n"
         "1. 'OPERATIONAL': The user wants to book, reschedule, cancel, or is answering a question about a booking "
         "(e.g., providing a barber name, time, date, service, or confirmation).\n"
-        "2. 'INSTITUTIONAL': Questions about company address, policies, rules, or general info.\n"
+        "2. 'INSTITUTIONAL': Questions about company address, policies, rules, products, services, "
+        "features, or pricing/plans.\n"
         "3. 'CHITCHAT': ONLY standalone greetings ('olá', 'tudo bem'), farewells, or off-topic talk.\n\n"
         "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'."
     ))
