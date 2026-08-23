@@ -52,6 +52,23 @@ GROUNDEDNESS_RULE = (
     "base context, the knowledge base always wins — it is the current source of truth, the history may be stale.\n"
 )
 
+# Rede de segurança do chitchat_node. Diferente dos nós institutional/operational,
+# este nó NÃO recebe contexto RAG nenhum — não há base de conhecimento no prompt.
+# Sem esta regra, quando o roteador erra e manda uma pergunta de negócio para cá,
+# o modelo não tem o que citar e inventa a empresa inteira (já aconteceu: respondeu
+# "chatbots, integrações CRM/ERP, consultoria" para um tenant que vende outra coisa).
+# A regra assume o pior caso do roteador e transforma alucinação em pedido de
+# reformulação, que é recuperável pelo usuário.
+CHITCHAT_NO_KNOWLEDGE_RULE = (
+    "SCOPE RULE (CRITICAL): You have NO knowledge base available in this turn. You therefore do "
+    "NOT know this business's products, services, plans, prices, hours, address, staff, or policies. "
+    "NEVER state, list, guess, or infer any of them — not even from your own earlier messages in this "
+    "conversation, which may themselves be wrong. If the user asks anything factual about the business, "
+    "do not answer it: briefly say you'll check that information and invite them to ask it directly "
+    "(e.g. 'Sobre isso deixa eu confirmar certinho — pode me perguntar o que gostaria de saber "
+    "dos nossos serviços?'), in the user's language. Only handle greetings, farewells and small talk.\n"
+)
+
 # Regra de integridade de agendamento, aplicada em cima do prompt operacional
 # SOMENTE quando o tenant tem agendamento habilitado (get_active_tools devolveu
 # tools de calendário). Substitui os guards antigos que inferiam por palavra
@@ -208,7 +225,10 @@ def routing_agent(state: AgentState, config: RunnableConfig):
     # Aciona o LLM passando as mensagens nativas
     system_prompt = SystemMessage(content=(
         "You are an orchestrator router for a business booking application.\n"
-        "Classify the intent of the user's latest response based on the conversation context.\n\n"
+        "Classify the intent of THE USER'S LAST MESSAGE ONLY. The earlier conversation is "
+        "provided solely to resolve pronouns and ellipsis (e.g. 'e o preço disso?'), NEVER to "
+        "decide the class. A streak of previous CHITCHAT turns is NOT evidence that the last "
+        "message is CHITCHAT — classify each message on its own merits.\n\n"
         "CLASSIFICATION RULES:\n"
         "1. 'OPERATIONAL': The user wants to book, reschedule, cancel, or is answering a question about a booking "
         "(e.g., providing a barber name, time, date, service, or confirmation).\n"
@@ -219,6 +239,18 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "pricing, or booking attached. If the message mixes small talk with ANY real "
         "question — even briefly, e.g. 'estou bem, obrigado, o que vocês vendem?' — "
         "classify by the real question's intent (INSTITUTIONAL or OPERATIONAL), NEVER CHITCHAT.\n\n"
+        "TIE-BREAKER: CHITCHAT is the LAST RESORT. If the message could plausibly be read as a "
+        "question about the business, choose INSTITUTIONAL over CHITCHAT.\n\n"
+        "EXAMPLES (last user message -> class):\n"
+        "'de nada, o que vcs vendem?' -> INSTITUTIONAL\n"
+        "'estou bem, obrigado, o q vcs vendem?' -> INSTITUTIONAL\n"
+        "'estes sao seus produtos?' -> INSTITUTIONAL\n"
+        "'ue achei q eram produtos de marketing' -> INSTITUTIONAL\n"
+        "'oi, quanto custa o plano?' -> INSTITUTIONAL\n"
+        "'ola' -> CHITCHAT\n"
+        "'tudo bem?' -> CHITCHAT\n"
+        "'obrigado, ate mais' -> CHITCHAT\n"
+        "'quero marcar pra amanha as 15h' -> OPERATIONAL\n\n"
         "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'."
     ))
     
@@ -453,6 +485,10 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
     # 1. Carrega o prompt do chitchat_node do tenant (vínculo próprio > padrão do nó >
     # texto fixo local), já com os guardrails aplicáveis embutidos (EDI-42)
     system_prompt_str = carregar_chitchat_prompt(tenant_id)
+
+    # Mesmo padrão do institutional_node: reforça a regra por cima do prompt carregado,
+    # porque o template (do banco ou local) não necessariamente a inclui.
+    system_prompt_str = f"{system_prompt_str}\n\n{CHITCHAT_NO_KNOWLEDGE_RULE}"
 
     # 2. Preserva histórico real (incluindo ToolMessages) e sanitiza sequência.
     historico_com_tools = [
