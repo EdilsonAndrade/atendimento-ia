@@ -220,9 +220,9 @@ llm = ChatOpenAI(
     base_url="https://api.deepseek.com/v1", # Garanta que a base URL aponta para a API do DeepSeek
     temperature=0,
     extra_body={
-        # "thinking": {
-        #     "type": "disabled"
-        # }
+        "thinking": {
+             "type": "disabled"
+        }
     }
 )
 
