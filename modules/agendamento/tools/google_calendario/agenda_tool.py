@@ -39,7 +39,10 @@ def build_agendar_tool(tenant_id: str, tenant_service, calendar_service) -> Call
             f"google_calendar_id={google_calendar_id!r}"
         )
         if not google_calendar_id:
-            print(" -> [TOOL: agendar_horario] Google Calendar não configurado; fallback permitido.")
+            print(
+                f" -> [CALENDAR_CREATE_FAIL] tenant_id={tenant_id} google_calendar_id=None "
+                f"periodo={start_time} até {end_time} motivo=tenant_sem_google_calendar_id"
+            )
             return "Erro: O tenant não possui um Google Calendar ID configurado."
 
         # 2. Checa disponibilidade na agenda antes de criar
@@ -52,6 +55,10 @@ def build_agendar_tool(tenant_id: str, tenant_service, calendar_service) -> Call
         print(f" -> [TOOL: agendar_horario] horario_disponivel={is_free}")
 
         if not is_free:
+            print(
+                f" -> [CALENDAR_CREATE_FAIL] tenant_id={tenant_id} google_calendar_id={google_calendar_id!r} "
+                f"periodo={start_time} até {end_time} motivo=horario_ocupado"
+            )
             return "O horário solicitado já está ocupado na agenda. Peça para o cliente escolher outro horário."
 
         # 3. Cria o evento na agenda do cliente
@@ -64,8 +71,8 @@ def build_agendar_tool(tenant_id: str, tenant_service, calendar_service) -> Call
         )
 
         print(
-            f" -> [TOOL: agendar_horario] evento_criado "
-            f"event_id={result.get('event_id')!r} link={result.get('link')!r}"
+            f" -> [CALENDAR_CREATE_OK] tenant_id={tenant_id} google_calendar_id={google_calendar_id!r} "
+            f"periodo={start_time} até {end_time} event_id={result.get('event_id')!r} link={result.get('link')!r}"
         )
 
         return (

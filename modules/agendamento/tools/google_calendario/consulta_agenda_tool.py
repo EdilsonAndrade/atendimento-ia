@@ -37,7 +37,10 @@ def build_consulta_tool(tenant_id: str, tenant_service, calendar_service) -> Cal
             f"google_calendar_id={google_calendar_id!r}"
         )
         if not google_calendar_id:
-            print(" -> [TOOL: consultar_agenda] Google Calendar não configurado; fallback permitido.")
+            print(
+                f" -> [CALENDAR_QUERY] tenant_id={tenant_id} google_calendar_id=None "
+                f"periodo={start_time} até {end_time} resultado=erro motivo=tenant_sem_google_calendar_id"
+            )
             return "Erro: O tenant não possui um Google Calendar ID configurado."
 
         events = calendar_service.list_events(
@@ -47,7 +50,10 @@ def build_consulta_tool(tenant_id: str, tenant_service, calendar_service) -> Cal
             query=query if query else None
         )
 
-        print(f" -> [TOOL: consultar_agenda] consulta concluída; eventos_encontrados={len(events)}")
+        print(
+            f" -> [CALENDAR_QUERY] tenant_id={tenant_id} google_calendar_id={google_calendar_id!r} "
+            f"periodo={start_time} até {end_time} resultado=ok eventos_encontrados={len(events)}"
+        )
 
         if not events:
             return "Nenhum agendamento ou compromisso encontrado para esse período/filtro."

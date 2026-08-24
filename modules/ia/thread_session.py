@@ -101,15 +101,32 @@ def _get_session_messages(active_thread_id: str) -> list:
 def _summarize_session(messages: list) -> dict:
     """Chama o LLM já configurado do projeto para gerar um resumo curto + fatos
     estruturados da sessão. Nunca inventa campo que não puder ser identificado na
-    conversa (FR-011) — o próprio prompt instrui o modelo a usar null nesse caso."""
+    conversa (FR-011) — o próprio prompt instrui o modelo a usar null nesse caso.
+
+    EDI-61: o texto do 'Atendente' (mensagens ai) é gerado por um LLM e pode alegar uma
+    confirmação/cancelamento de agendamento que nunca aconteceu de fato (o "agendamento
+    fantasma" do incidente original). Por isso as ToolMessage do histórico — o único
+    resultado real de uma ação de calendário — também entram no texto analisado, como
+    linhas separadas e explicitamente marcadas como a única fonte confiável sobre o que
+    de fato ocorreu, para o campo `resultado` nunca ser preenchido com base só na palavra
+    do Atendente."""
     from langchain_core.messages import HumanMessage, SystemMessage
     from modules.ia.agent_graph import llm
 
-    conversa_texto = "\n".join(
-        f"{'Cliente' if getattr(m, 'type', None) == 'human' else 'Atendente'}: {m.content}"
-        for m in messages
-        if getattr(m, "type", None) in ("human", "ai") and str(getattr(m, "content", "") or "").strip()
-    )
+    linhas_conversa = []
+    for m in messages:
+        tipo = getattr(m, "type", None)
+        conteudo = str(getattr(m, "content", "") or "").strip()
+        if not conteudo:
+            continue
+        if tipo == "human":
+            linhas_conversa.append(f"Cliente: {conteudo}")
+        elif tipo == "ai":
+            linhas_conversa.append(f"Atendente: {conteudo}")
+        elif tipo == "tool":
+            linhas_conversa.append(f"Resultado real de ferramenta (fonte confiável, não é o que o Atendente disse): {conteudo}")
+
+    conversa_texto = "\n".join(linhas_conversa)
     if not conversa_texto.strip():
         return {"resumo": "", "fatos": {}}
 
@@ -117,7 +134,15 @@ def _summarize_session(messages: list) -> dict:
         "Resuma a conversa de atendimento abaixo em até 3 frases curtas (~200 tokens no total). "
         "Depois, extraia em JSON os campos: nome, interesse, objecao, resultado. "
         "Use null para qualquer campo que não puder ser identificado com base real na conversa — "
-        "NUNCA invente ou suponha um valor. "
+        "NUNCA invente ou suponha um valor.\n\n"
+        "REGRA CRÍTICA SOBRE O CAMPO 'resultado': as linhas do 'Atendente' são texto gerado por um "
+        "modelo de linguagem e PODEM alegar uma confirmação/cancelamento de agendamento que nunca "
+        "aconteceu de verdade. As linhas 'Resultado real de ferramenta' são a ÚNICA fonte confiável "
+        "sobre o que de fato aconteceu no calendário. Só preencha 'resultado' com um agendamento "
+        "confirmado/cancelado se houver uma linha 'Resultado real de ferramenta' correspondente que "
+        "comprove isso. Se o Atendente alegou uma confirmação mas não há nenhuma linha de 'Resultado "
+        "real de ferramenta' comprovando, use null para 'resultado' — NUNCA confie apenas na palavra "
+        "do Atendente para esse campo.\n\n"
         "Responda ESTRITAMENTE em JSON, no formato: "
         '{"resumo": "...", "fatos": {"nome": null, "interesse": null, "objecao": null, "resultado": null}}'
     ))

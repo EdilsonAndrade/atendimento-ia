@@ -28,7 +28,10 @@ def build_delete_tool(tenant_id: str, tenant_service, calendar_service) -> Calla
             f"google_calendar_id={google_calendar_id!r}"
         )
         if not google_calendar_id:
-            print(" -> [TOOL: cancelar_evento_google] Google Calendar não configurado; fallback permitido.")
+            print(
+                f" -> [CALENDAR_CANCEL_FAIL] tenant_id={tenant_id} google_calendar_id=None "
+                f"event_id={event_id} motivo=tenant_sem_google_calendar_id"
+            )
             return "Erro: O tenant não possui um Google Calendar ID configurado."
 
         result = calendar_service.delete_event(
@@ -39,8 +42,16 @@ def build_delete_tool(tenant_id: str, tenant_service, calendar_service) -> Calla
         print(f" -> [TOOL: cancelar_evento_google] resultado={result}")
 
         if result.get("status") == "deleted":
+            print(
+                f" -> [CALENDAR_CANCEL_OK] tenant_id={tenant_id} google_calendar_id={google_calendar_id!r} "
+                f"event_id={event_id}"
+            )
             return f"Agendamento (ID: {event_id}) foi cancelado com sucesso."
         else:
+            print(
+                f" -> [CALENDAR_CANCEL_FAIL] tenant_id={tenant_id} google_calendar_id={google_calendar_id!r} "
+                f"event_id={event_id} motivo={result.get('message')!r}"
+            )
             return f"Erro ao tentar cancelar o agendamento: {result.get('message')}"
 
     return cancelar_evento_google

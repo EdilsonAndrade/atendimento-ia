@@ -373,9 +373,10 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "'tudo bem?' -> CHITCHAT\n"
         "'obrigado, ate mais' -> CHITCHAT\n"
         "'quero marcar pra amanha as 15h' -> OPERATIONAL\n"
-        "'não entendi' (PREVIOUS TURN INTENT: OPERATIONAL) -> OPERATIONAL\n"
-        "'como assim?' (PREVIOUS TURN INTENT: INSTITUTIONAL) -> INSTITUTIONAL\n\n"
-        "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', or 'CHITCHAT'."
+        "'não entendi' (PREVIOUS TURN INTENT: OPERATIONAL) -> CONTINUATION\n"
+        "'como assim?' (PREVIOUS TURN INTENT: INSTITUTIONAL) -> CONTINUATION\n\n"
+        "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', 'CHITCHAT', or "
+        "'CONTINUATION'."
     ))
 
     # 3. Para o roteador, preserva a sequência AI(tool_calls)->ToolMessage e sanitiza.
@@ -707,6 +708,65 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
 
 
 # ============================================================================
+# PASSO 6.5: ARESTA CONDICIONAL DE SAÍDA DE institutional_node/chitchat_node (EDI-61)
+# ============================================================================
+# institutional_node e chitchat_node NUNCA têm tools de calendário vinculadas
+# (de propósito — ver docstring de operational_node) e por isso não podem executar
+# nenhuma ação real de agenda. Se o routing_agent errar a classificação de um turno
+# que na verdade é operacional (ex.: cliente confirmando e-mail/nome/horário em
+# mensagens curtas), o LLM desses nós pode NARRAR uma confirmação/consulta de agenda
+# em texto sem que nada tenha acontecido de fato no Google Calendar — o "agendamento
+# fantasma" do EDI-61.
+#
+# Em vez de vincular tools de calendário aqui também (o que duplicaria as regras de
+# negócio que só existem no operational_node: múltiplos agendamentos, privacidade de
+# calendário, horário de funcionamento, SESSION CONTACT MEMORY, guardrail de lastro,
+# retry com tool_choice="required"), reaproveitamos a MESMA detecção heurística já
+# usada dentro do operational_node (_resposta_sem_lastro_de_tool) e, se ela disparar,
+# redirecionamos o turno para operational_node — que tem as tools reais e todo o
+# guardrail já revisado — em vez de ir direto para END. O cliente só vê a última
+# mensagem do estado final (ver modules/webhook/whatsapp.py), então mesmo a resposta
+# alucinada deste nó nunca chega até ele.
+def _make_pre_end_guardrail_router(node_name: str):
+    """Fábrica da função de roteamento condicional pós-nó para institutional_node/chitchat_node."""
+
+    def _router(state: AgentState, config: RunnableConfig) -> str:
+        ultima_mensagem = state["messages"][-1]
+        guardrail_acionado = _resposta_sem_lastro_de_tool(ultima_mensagem, state["messages"])
+
+        if not guardrail_acionado:
+            return "end"
+
+        configurable = config.get("configurable", {})
+        tenant_id = configurable.get("tenant_id", "default_tenant")
+
+        # Só há para onde redirecionar se o tenant realmente tiver agenda habilitada —
+        # sem tools de calendário ativas, operational_node não teria nada a executar
+        # (mesmo comportamento de hoje para esses tenants; ver spec > Edge Cases).
+        if not get_active_tools(tenant_id):
+            return "end"
+
+        thread_id = configurable.get("thread_id", "unknown")
+        trecho = (ultima_mensagem.content or "")
+        if not isinstance(trecho, str):
+            trecho = str(trecho)
+        trecho = trecho[:200]
+        print(
+            f" -> 🛡️ [CALENDAR_GUARDRAIL_REDIRECT] node={node_name} tenant_id={tenant_id} "
+            f"thread_id={thread_id!r} motivo={guardrail_acionado} trecho={trecho!r}. "
+            f"Redirecionando para operational_node para executar a ação real de calendário "
+            f"antes de responder ao cliente."
+        )
+        return "operational_node"
+
+    return _router
+
+
+_institutional_output_router = _make_pre_end_guardrail_router("institutional_node")
+_chitchat_output_router = _make_pre_end_guardrail_router("chitchat_node")
+
+
+# ============================================================================
 # PASSO 7: CONSTRUÇÃO E COMPILAÇÃO DO GRAFO (Fiação do LangGraph)
 # ============================================================================
 
@@ -761,8 +821,27 @@ builder.add_conditional_edges(
 )
 
 builder.add_edge("tools", "operational_node")
-builder.add_edge("institutional_node", END)
-builder.add_edge("chitchat_node", END)
+
+# EDI-61: em vez de ir sempre para END, institutional_node/chitchat_node passam pelo
+# guardrail de "confirmação sem lastro de tool" (ver _make_pre_end_guardrail_router
+# acima) — se disparar e o tenant tiver agenda habilitada, o turno é redirecionado
+# para operational_node para executar a ação real antes de responder ao cliente.
+builder.add_conditional_edges(
+    "institutional_node",
+    _institutional_output_router,
+    {
+        "operational_node": "operational_node",
+        "end": END,
+    },
+)
+builder.add_conditional_edges(
+    "chitchat_node",
+    _chitchat_output_router,
+    {
+        "operational_node": "operational_node",
+        "end": END,
+    },
+)
 
 def get_compiled_graph():
     """
