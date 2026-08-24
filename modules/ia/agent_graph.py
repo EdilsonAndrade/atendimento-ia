@@ -26,6 +26,7 @@ from modules.agendamento.tools.google_calendario.delete_agenda_tool import build
 from modules.google_calendar.google_calendar_service import GoogleCalendarService
 from modules.tenant.tenant_service import TenantService
 from util.ai_helpers import sanitize_for_openai_strict_format  # COMENTÁRIO: Importa a função de higienização de histórico
+from modules.ia.thread_session import get_latest_session_summary, build_session_summary_context_block
 from langchain_core.messages import trim_messages
 from util.ai_helpers import (
     extract_customer_profile,
@@ -523,6 +524,15 @@ def operational_node(state: AgentState, config: RunnableConfig):
     if customer_context:
         system_prompt_str = f"{system_prompt_str}{customer_context}"
 
+    # Injeta o resumo/fatos estruturados da sessão anterior (Camada 2 de memória, EDI-59),
+    # se este cliente (base_thread_id) já tiver uma sessão expirada resumida anteriormente.
+    base_thread_id = configurable.get("base_thread_id")
+    if base_thread_id:
+        previous_summary = get_latest_session_summary(base_thread_id)
+        summary_context = build_session_summary_context_block(previous_summary)
+        if summary_context:
+            system_prompt_str = f"{system_prompt_str}{summary_context}"
+
     # 1. Filtramos as decisões do roteador das mensagens
     mensagens_chat = [
         m for m in state["messages"] 
@@ -536,7 +546,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
         mensagens_chat,
         strategy="last",
         token_counter=len,          # Trata cada mensagem como 1 unidade (corta por quantidade)
-        max_tokens=50,               # Mantém janela maior para reduzir perda de contexto imediato
+        max_tokens=95,               # Mantém janela maior para reduzir perda de contexto imediato
         start_on="human",            # Garante que o histórico corte sempre até achar uma mensagem do usuário
         end_on=("human", "tool"),    # Impede encerramento inválido em AIMessage sem resposta
         include_system=False         # O SystemMessage é montado separadamente na linha abaixo

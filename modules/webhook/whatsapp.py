@@ -177,7 +177,8 @@ async def processar_mensagem_e_responder(
             configuracao_requisicao = {
                 "configurable": {
                     "tenant_id": tenant_id,
-                    "thread_id": thread_id_grafo
+                    "thread_id": thread_id_grafo,
+                    "base_thread_id": thread_id_base
                 }
             }
 

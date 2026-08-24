@@ -1,6 +1,10 @@
 #Consulta a agenda do Google Calendar para verificar se há conflitos de horário antes de agendar um novo compromisso.
+from typing import Callable
+
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+
+from util.tool_error_handling import safe_tool_result
 
 class SearchAppointmentInput(BaseModel):
     # CRITICO: NAO usar data de exemplo aqui. Um literal fixo nesta descricao e enviado
@@ -10,11 +14,15 @@ class SearchAppointmentInput(BaseModel):
     end_time: str = Field(description="Data/hora final para busca no formato ISO (YYYY-MM-DDTHH:MM:SS-03:00). SEMPRE calcule a partir da tabela CALENDAR REFERENCE do prompt, nunca invente ou reutilize uma data de exemplo.")
     query: str = Field(default="", description="Nome ou telefone do cliente para filtrar os eventos (opcional)")
 
-def build_consulta_tool(tenant_id: str, tenant_service, calendar_service):
+def build_consulta_tool(tenant_id: str, tenant_service, calendar_service) -> Callable:
     """
     Fábrica da Tool de Consulta para verificar disponibilidade ou localizar agendamento existente.
     """
     @tool("consultar_agenda", args_schema=SearchAppointmentInput)
+    @safe_tool_result(
+        fallback="Não foi possível consultar a agenda no Google Calendar agora. Por favor, tente novamente em instantes.",
+        tenant_id=tenant_id,
+    )
     def consultar_agenda(start_time: str, end_time: str, query: str = "") -> str:
         """Utilize para verificar horários ocupados/livres ou para localizar o event_id de um agendamento existente."""
 
@@ -32,16 +40,12 @@ def build_consulta_tool(tenant_id: str, tenant_service, calendar_service):
             print(" -> [TOOL: consultar_agenda] Google Calendar não configurado; fallback permitido.")
             return "Erro: O tenant não possui um Google Calendar ID configurado."
 
-        try:
-            events = calendar_service.list_events(
-                calendar_id=google_calendar_id,
-                start_time=start_time,
-                end_time=end_time,
-                query=query if query else None
-            )
-        except Exception as ex:
-            print(f" -> [TOOL: consultar_agenda] ERRO Google Calendar: {type(ex).__name__}: {ex}")
-            raise
+        events = calendar_service.list_events(
+            calendar_id=google_calendar_id,
+            start_time=start_time,
+            end_time=end_time,
+            query=query if query else None
+        )
 
         print(f" -> [TOOL: consultar_agenda] consulta concluída; eventos_encontrados={len(events)}")
 

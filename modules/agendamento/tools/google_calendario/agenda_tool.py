@@ -1,6 +1,10 @@
 # Agendamento de compromissos no Google Calendar
+from typing import Callable
+
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+
+from util.tool_error_handling import safe_tool_result
 
 class CreateAppointmentInput(BaseModel):
     summary: str = Field(description="Nome do cliente e/ou tipo de atendimento")
@@ -11,11 +15,15 @@ class CreateAppointmentInput(BaseModel):
     end_time: str = Field(description="Data e hora de término no formato ISO 8601 (YYYY-MM-DDTHH:MM:SS-03:00). SEMPRE calcule a partir da tabela CALENDAR REFERENCE do prompt, nunca invente ou reutilize uma data de exemplo.")
     description: str = Field(default="", description="Telefone do cliente, e-mail ou observações sobre o atendimento")
 
-def build_agendar_tool(tenant_id: str, tenant_service, calendar_service) ->str:
+def build_agendar_tool(tenant_id: str, tenant_service, calendar_service) -> Callable:
     """
     Fábrica que injeta os serviços e o tenant_id ativo na Tool de Agendamento.
     """
     @tool("agendar_horario", args_schema=CreateAppointmentInput)
+    @safe_tool_result(
+        fallback="Não foi possível concluir o agendamento no Google Calendar agora. Por favor, tente novamente em instantes.",
+        tenant_id=tenant_id,
+    )
     def agendar_horario(summary: str, start_time: str, end_time: str, description: str = "") -> str:
         """Utilize para criar um agendamento no Google Calendar após o cliente confirmar data e horário."""
 
@@ -35,15 +43,11 @@ def build_agendar_tool(tenant_id: str, tenant_service, calendar_service) ->str:
             return "Erro: O tenant não possui um Google Calendar ID configurado."
 
         # 2. Checa disponibilidade na agenda antes de criar
-        try:
-            is_free = calendar_service.check_availability(
-                calendar_id=google_calendar_id,
-                start_time=start_time,
-                end_time=end_time
-            )
-        except Exception as ex:
-            print(f" -> [TOOL: agendar_horario] ERRO ao consultar disponibilidade: {type(ex).__name__}: {ex}")
-            raise
+        is_free = calendar_service.check_availability(
+            calendar_id=google_calendar_id,
+            start_time=start_time,
+            end_time=end_time
+        )
 
         print(f" -> [TOOL: agendar_horario] horario_disponivel={is_free}")
 
@@ -51,17 +55,13 @@ def build_agendar_tool(tenant_id: str, tenant_service, calendar_service) ->str:
             return "O horário solicitado já está ocupado na agenda. Peça para o cliente escolher outro horário."
 
         # 3. Cria o evento na agenda do cliente
-        try:
-            result = calendar_service.create_event(
-                calendar_id=google_calendar_id,
-                summary=summary,
-                start_time=start_time,
-                end_time=end_time,
-                description=description
-            )
-        except Exception as ex:
-            print(f" -> [TOOL: agendar_horario] ERRO ao criar evento: {type(ex).__name__}: {ex}")
-            raise
+        result = calendar_service.create_event(
+            calendar_id=google_calendar_id,
+            summary=summary,
+            start_time=start_time,
+            end_time=end_time,
+            description=description
+        )
 
         print(
             f" -> [TOOL: agendar_horario] evento_criado "

@@ -1,3 +1,3 @@
 {
-  "feature_directory": "specs/006-tenant-delete-cascade"
+  "feature_directory": "specs/007-tool-error-context-sanitization"
 }

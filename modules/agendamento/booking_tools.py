@@ -3,6 +3,7 @@ from langchain.tools import tool
 from pydantic import Field, BaseModel, ConfigDict
 import psycopg
 from infrastructure.connection import DB_URI
+from util.tool_error_handling import safe_tool_result
 
 
 class BookingInput(BaseModel):
@@ -111,6 +112,7 @@ def create_google_calendar_event(
 # TOOL OFICIAL DO LANGCHAIN / LANGGRAPH
 # ============================================================================
 @tool("confirmar_agendamento", args_schema=BookingInput)
+@safe_tool_result(fallback="Não foi possível concluir o agendamento agora. Por favor, tente novamente em instantes.")
 def confirmar_agendamento(
     tenant_id: str,
     cliente_nome: str,
@@ -128,42 +130,37 @@ def confirmar_agendamento(
     Use esta ferramenta apenas quando tiver todos os dados confirmados pelo cliente.
     """
     print(f"\n --- [TOOL EXECUTADA: confirmar_agendamento] Processando reserva para {cliente_nome}... ---")
-    
-    try:
-        is_available = real_time_available(tenant_id, profissional, data_agendamento,horario)
-        
-        if is_available:
-            return is_available
-        
-        # 1. Dispara integração com o Google Calendar (1.3)
-        google_evt_id = create_google_calendar_event(
-            email_profissional=email_profissional,
-            cliente_email=cliente_email,
-            servico=servico,
-            cliente_nome=cliente_nome,
-            data_agendamento=data_agendamento,
-            horario=horario
-        )
-        
-        # 2. Salva no banco de dados do Tenant no PostgreSQL (1.6)
-        agendamento_id = save_local_booking(
-            tenant_id=tenant_id,
-            cliente_nome=cliente_nome,
-            cliente_email=cliente_email,
-            servico=servico,
-            profissional=profissional,
-            email_profissional=email_profissional,
-            data_agendamento=data_agendamento,
-            horario=horario,
-            google_event_id=google_evt_id
-        )
-        
-        return (
-            f"Agendamento confirmado com sucesso! ID da reserva: #{agendamento_id}. "
-            f"O serviço '{servico}' com {profissional} ficou marcado para {data_agendamento} às {horario}. "
-            f"Um convite foi enviado para o e-mail {cliente_email}."
-        )
-        
-    except Exception as e:
-        print(f"❌ Erro na execução da Tool de agendamento: {e}")
-        return f"Falha ao realizar o agendamento no sistema: {str(e)}"
+
+    is_available = real_time_available(tenant_id, profissional, data_agendamento, horario)
+
+    if is_available:
+        return is_available
+
+    # 1. Dispara integração com o Google Calendar (1.3)
+    google_evt_id = create_google_calendar_event(
+        email_profissional=email_profissional,
+        cliente_email=cliente_email,
+        servico=servico,
+        cliente_nome=cliente_nome,
+        data_agendamento=data_agendamento,
+        horario=horario
+    )
+
+    # 2. Salva no banco de dados do Tenant no PostgreSQL (1.6)
+    agendamento_id = save_local_booking(
+        tenant_id=tenant_id,
+        cliente_nome=cliente_nome,
+        cliente_email=cliente_email,
+        servico=servico,
+        profissional=profissional,
+        email_profissional=email_profissional,
+        data_agendamento=data_agendamento,
+        horario=horario,
+        google_event_id=google_evt_id
+    )
+
+    return (
+        f"Agendamento confirmado com sucesso! ID da reserva: #{agendamento_id}. "
+        f"O serviço '{servico}' com {profissional} ficou marcado para {data_agendamento} às {horario}. "
+        f"Um convite foi enviado para o e-mail {cliente_email}."
+    )
