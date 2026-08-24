@@ -37,9 +37,6 @@ def list_tenants(
     offset: int = Query(0, ge=0),
     tenant_service: TenantService = Depends(),
 ):
-    print("******************************************** cheguei aqui")
-    resposta = tenant_service.list_tenants(q, limit, offset)
-    print("******************************************** resposta", resposta)
     return tenant_service.list_tenants(q, limit, offset)
 
 

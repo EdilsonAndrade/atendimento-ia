@@ -27,6 +27,8 @@ from modules.google_calendar.google_calendar_service import GoogleCalendarServic
 from modules.tenant.tenant_service import TenantService
 from util.ai_helpers import sanitize_for_openai_strict_format  # COMENTÁRIO: Importa a função de higienização de histórico
 from modules.ia.thread_session import get_latest_session_summary, build_session_summary_context_block
+from modules.token_usage.application.record_token_usage import RecordTokenUsageUseCase
+from modules.token_usage.infrastructure.postgres_token_usage_repository import PostgresTokenUsageRepository
 from langchain_core.messages import trim_messages
 from util.ai_helpers import (
     extract_customer_profile,
@@ -292,6 +294,26 @@ def _intencao_anterior_nao_chitchat(messages) -> str | None:
 
 
 # ============================================================================
+# RASTREAMENTO DE CUSTO DE TOKEN POR CHAMADA AO LLM (EDI-60)
+# ============================================================================
+_token_usage_use_case = RecordTokenUsageUseCase(PostgresTokenUsageRepository())
+
+
+def record_llm_usage(response, config: RunnableConfig, node_type: str) -> None:
+    """Registra o custo/consumo de token de UMA chamada real ao LLM. Nunca lança
+    exceção nem afeta a resposta ao cliente (FR-006) — a proteção vive dentro do
+    próprio RecordTokenUsageUseCase."""
+    configurable = config.get("configurable", {})
+    _token_usage_use_case.execute(
+        response=response,
+        tenant_id=configurable.get("tenant_id", "default_tenant"),
+        base_thread_id=configurable.get("base_thread_id"),
+        thread_id=configurable.get("thread_id"),
+        node_type=node_type,
+    )
+
+
+# ============================================================================
 # PASSO 3: NÓ ROTEADOR COM GUARDRAIL DE CONTEXTO DUAL (routing_agent)
 # ============================================================================
 def routing_agent(state: AgentState, config: RunnableConfig):
@@ -376,6 +398,7 @@ def routing_agent(state: AgentState, config: RunnableConfig):
 
     log_llm_prompt("routing_agent", tenant_id, mensagens_para_ia)
     resposta = llm.invoke(mensagens_para_ia)
+    record_llm_usage(resposta, config, node_type="routing_agent")
     decisao = resposta.content.strip().upper()
     
     if "OPERATIONAL" in decisao:
@@ -469,6 +492,7 @@ def institutional_node(state: AgentState, config: RunnableConfig):
 
     log_llm_prompt("institutional_node", tenant_id, prompt_final)
     resposta_ia = llm.invoke(prompt_final)
+    record_llm_usage(resposta_ia, config, node_type="institutional_node")
     print(" -> Resposta institucional formulada com sucesso!")
     return {"messages": [AIMessage(content=resposta_ia.content)]}
 
@@ -562,6 +586,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
 
     log_llm_prompt("operational_node", tenant_id, mensagens_para_ia)
     resposta_ia = llm_dynamic.invoke(mensagens_para_ia)
+    record_llm_usage(resposta_ia, config, node_type="operational_node")
 
     # GUARDRAIL DE SAÍDA: resposta sem tool_calls que (a) vazou markup interno de
     # tool-calling no content, ou (b) afirma um resultado de agenda (consultado,
@@ -577,6 +602,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
         )
         llm_forcado = llm.bind_tools(all_active_tools, tool_choice="required", parallel_tool_calls=False)
         resposta_ia = llm_forcado.invoke(mensagens_para_ia)
+        record_llm_usage(resposta_ia, config, node_type="operational_node")
 
         # Se mesmo forçado o modelo ainda não produziu tool_calls (ou repetiu o
         # vazamento), não arriscamos mandar o conteúdo ao cliente — substitui por
@@ -671,6 +697,7 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
     try:
         log_llm_prompt("chitchat_node", tenant_id, mensagens_para_ia)
         resposta_ia = llm.invoke(mensagens_para_ia)
+        record_llm_usage(resposta_ia, config, node_type="chitchat_node")
         print(" -> Resposta casual/guardrail gerada com sucesso!")
         return {"messages": [AIMessage(content=resposta_ia.content)]}
     except Exception as e:
