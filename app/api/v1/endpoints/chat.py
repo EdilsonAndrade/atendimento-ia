@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 from modules.tenant.tenant_service import TenantService
 from app.core.limiter import limiter
+from modules.observability.interface.logger_factory import get_logger
 SECRET_KEY = os.getenv("SECRET_KEY", "mudar_senha_123")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 
@@ -187,6 +188,13 @@ async def chat_interaction(
         logger.error(
             f"❌ [TIMEOUT] O processamento da mensagem estourou o tempo limite para a thread {payload.thread_id}"
         )
+        get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="chat_api").error(
+            message="Chat request timed out (40s)",
+            method="app.api.v1.endpoints.chat.chat_interaction",
+            line=186,
+            thread_id=thread_id_grafo,
+            extra={"error": "TIMEOUT"},
+        )
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="O serviço de atendimento demorou muito para responder. Por favor, tente novamente.",
@@ -196,6 +204,13 @@ async def chat_interaction(
         logger.error(
             f"❌ [AGENT ERROR] Falha inesperada no processamento da thread {payload.thread_id}: {str(ex)}",
             exc_info=True,
+        )
+        get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="chat_api").error(
+            message=f"Chat request failed: {ex}",
+            method="app.api.v1.endpoints.chat.chat_interaction",
+            line=194,
+            thread_id=thread_id_grafo,
+            extra={"error": str(ex)},
         )
 
         # Retorno amigável em JSON sem expor stack traces sensíveis de banco/código para o cliente

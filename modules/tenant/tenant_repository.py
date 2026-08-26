@@ -1,4 +1,5 @@
 from infrastructure.connection import get_db_connection
+from modules.observability.interface.logger_factory import get_logger
 
 class TenantRepository:
     def __init__(self, connection=None):
@@ -110,9 +111,16 @@ class TenantRepository:
             )
 
             self._commit()
-        except Exception:
+        except Exception as e:
             if self._owns_connection:
                 self.db_connection.rollback()
+            get_logger(tenant_id=tenant_data.get("tenant_id", "unknown"), tenant_name=tenant_data.get("tenant_id", "unknown"), agent="tenant_repository").error(
+                message=f"Tenant creation failed: {e}",
+                method="modules.tenant.tenant_repository.create_tenant_with_prompt",
+                line=113,
+                thread_id="system",
+                extra={"error": str(e), "prompt_id": prompt_id},
+            )
             raise
         finally:
             cursor.close()

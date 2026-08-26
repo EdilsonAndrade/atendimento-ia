@@ -25,6 +25,7 @@ from modules.token_usage.infrastructure.redis_retry_queue import (
     get_redis_client,
     record_to_fields,
 )
+from modules.observability.interface.logger_factory import get_logger
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,13 @@ class TokenUsageRetryWorker:
             self._client.xgroup_create(STREAM_NAME, CONSUMER_GROUP, id="0", mkstream=True)
         except redis.ResponseError as exc:
             if "BUSYGROUP" not in str(exc):
+                get_logger(tenant_id="unknown", tenant_name="unknown", agent="token_usage_retry_worker").error(
+                    message=f"Failed to ensure Redis consumer group: {exc}",
+                    method="modules.token_usage.infrastructure.retry_worker._ensure_group",
+                    line=56,
+                    thread_id="system",
+                    extra={"error": str(exc)},
+                )
                 raise
 
     def _process_message(self, message_id: str, fields: dict) -> None:
@@ -64,6 +72,13 @@ class TokenUsageRetryWorker:
             # Dado corrompido/ilegível: não há como reprocessar — vai direto pra
             # dead-letter em vez de martelar para sempre num payload inválido.
             logger.error("Entrada ilegível na fila de retry (id=%s): %s", message_id, exc, exc_info=True)
+            get_logger(tenant_id="unknown", tenant_name="unknown", agent="token_usage_retry_worker").error(
+                message=f"Unparseable entry in token usage retry queue: {exc}",
+                method="modules.token_usage.infrastructure.retry_worker._process_message",
+                line=66,
+                thread_id="system",
+                extra={"error": str(exc), "message_id": message_id},
+            )
             self._move_to_dead_letter_raw(message_id, fields)
             return
 
@@ -74,6 +89,13 @@ class TokenUsageRetryWorker:
             logger.error(
                 "Falha ao reprocessar entrada da fila de retry (id=%s, tenant_id=%s): %s",
                 message_id, record.tenant_id, exc, exc_info=True,
+            )
+            get_logger(tenant_id=record.tenant_id, tenant_name=record.tenant_id, agent="token_usage_retry_worker").error(
+                message=f"Failed to reprocess token usage retry entry: {exc}",
+                method="modules.token_usage.infrastructure.retry_worker._process_message",
+                line=74,
+                thread_id=record.thread_id,
+                extra={"error": str(exc), "message_id": message_id},
             )
             self._maybe_dead_letter(message_id, record)
 
@@ -135,4 +157,11 @@ class TokenUsageRetryWorker:
                 self.run_once()
             except Exception as exc:
                 logger.error("Erro no loop do TokenUsageRetryWorker: %s", exc, exc_info=True)
+                get_logger(tenant_id="unknown", tenant_name="unknown", agent="token_usage_retry_worker").error(
+                    message=f"TokenUsageRetryWorker loop error: {exc}",
+                    method="modules.token_usage.infrastructure.retry_worker.run_forever",
+                    line=137,
+                    thread_id="system",
+                    extra={"error": str(exc)},
+                )
                 time.sleep(DEFAULT_POLL_INTERVAL_SECONDS)

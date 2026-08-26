@@ -9,6 +9,8 @@ import os
 import smtplib
 from email.mime.text import MIMEText
 
+from modules.observability.interface.logger_factory import get_logger as get_obs_logger
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,3 +55,10 @@ class SmtpEmailSender:
                 logger.info(f"[EDI-63] Email enviado com sucesso! To: {to}, Subject: {subject}")
         except Exception as exc:
             logger.error("[EDI-63] Falha ao enviar e-mail '%s' para %s: %s", subject, to, exc, exc_info=True)
+            get_obs_logger(tenant_id="unknown", tenant_name="unknown", agent="email_sender").error(
+                message=f"Failed to send email: {exc}",
+                method="modules.tenant_limits.infrastructure.smtp_email_sender.send",
+                line=54,
+                thread_id="system",
+                extra={"error": str(exc), "subject": subject},
+            )

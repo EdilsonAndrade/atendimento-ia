@@ -1,6 +1,8 @@
 import functools
 import logging
 
+from modules.observability.interface.logger_factory import get_logger as get_obs_logger
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,6 +45,14 @@ def safe_tool_result(fallback: str, tenant_id: str = None):
                     type(exc).__name__,
                     exc,
                     exc_info=True,
+                )
+                safe_tenant_id = resolved_tenant_id or "unknown"
+                get_obs_logger(tenant_id=safe_tenant_id, tenant_name=safe_tenant_id, agent="tool_executor").error(
+                    message=f"Tool '{func.__name__}' failed: {type(exc).__name__}: {exc}",
+                    method="util.tool_error_handling.safe_tool_result",
+                    line=35,
+                    thread_id=thread_id or "unknown",
+                    extra={"tool_name": func.__name__, "error": str(exc), "error_type": type(exc).__name__},
                 )
                 return fallback
         return wrapper

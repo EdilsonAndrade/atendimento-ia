@@ -28,6 +28,7 @@ from modules.follow_up.infrastructure.customer_name_lookup import get_customer_n
 from modules.follow_up.infrastructure.postgres_follow_up_queue_repository import (
     PostgresFollowUpQueueRepository,
 )
+from modules.observability.interface.logger_factory import get_logger
 
 router = APIRouter(prefix="/tenants/{tenant_id}/follow-up-queue", tags=["Follow-up Queue"])
 global_router = APIRouter(prefix="/follow-up-queue", tags=["Follow-up Queue"])
@@ -124,6 +125,13 @@ def update_follow_up_entry(
             approved_by=body.approved_by,
         )
     except FollowUpEntryNotFoundError as exc:
+        get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="follow_up_queue_api").warn(
+            message=f"Follow-up entry not found: {exc}",
+            method="app.api.v1.endpoints.follow_up_queue.update_follow_up_entry",
+            line=126,
+            thread_id="system",
+            extra={"entry_id": entry_id},
+        )
         raise HTTPException(status_code=404, detail=str(exc))
 
     return _entry_to_dict(entry, customer_name_lookup)

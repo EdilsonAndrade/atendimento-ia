@@ -4,6 +4,7 @@ from pydantic import Field, BaseModel, ConfigDict
 import psycopg
 from infrastructure.connection import DB_URI
 from util.tool_error_handling import safe_tool_result
+from modules.observability.interface.logger_factory import get_logger
 
 
 class BookingInput(BaseModel):
@@ -121,7 +122,8 @@ def confirmar_agendamento(
     profissional: str,
     email_profissional: str,
     data_agendamento: str,
-    horario: str
+    horario: str,
+    thread_id: str = "unknown"  # Will be provided by agent context
 ) -> str:
     """
     Executa a confirmação final do agendamento.
@@ -129,11 +131,33 @@ def confirmar_agendamento(
     no Google Calendar do profissional e do cliente (Google Calendar 1.3).
     Use esta ferramenta apenas quando tiver todos os dados confirmados pelo cliente.
     """
+    logger = get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="booking_agent")
+
+    logger.info(
+        message="Booking started",
+        method="modules.agendamento.booking_tools.confirmar_agendamento",
+        line=117,
+        thread_id=thread_id,
+        extra={
+            "servico": servico,
+            "profissional": profissional,
+            "data_agendamento": data_agendamento,
+            "horario": horario,
+        }
+    )
+
     print(f"\n --- [TOOL EXECUTADA: confirmar_agendamento] Processando reserva para {cliente_nome}... ---")
 
     is_available = real_time_available(tenant_id, profissional, data_agendamento, horario)
 
     if is_available:
+        logger.error(
+            message=f"Booking slot unavailable: {is_available}",
+            method="modules.agendamento.booking_tools.confirmar_agendamento",
+            line=147,
+            thread_id=thread_id,
+            extra={"error": "SLOT_UNAVAILABLE"}
+        )
         return is_available
 
     # 1. Dispara integração com o Google Calendar (1.3)
@@ -157,6 +181,17 @@ def confirmar_agendamento(
         data_agendamento=data_agendamento,
         horario=horario,
         google_event_id=google_evt_id
+    )
+
+    logger.info(
+        message=f"Booking confirmed: {agendamento_id}",
+        method="modules.agendamento.booking_tools.confirmar_agendamento",
+        line=174,
+        thread_id=thread_id,
+        extra={
+            "agendamento_id": agendamento_id,
+            "google_event_id": google_evt_id,
+        }
     )
 
     return (

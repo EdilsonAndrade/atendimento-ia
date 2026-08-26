@@ -8,6 +8,7 @@ import logging
 from typing import Protocol
 
 from modules.conversation_history.application.ports import ConversationMessageRepository
+from modules.observability.interface.logger_factory import get_logger
 
 logger = logging.getLogger(__name__)
 
@@ -40,5 +41,12 @@ class PurgeExpiredMessagesUseCase:
                 logger.error(
                     "Falha ao expurgar conversation_messages do tenant_id=%s: %s",
                     tenant_id, exc, exc_info=True,
+                )
+                get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="conversation_purge_job").error(
+                    message=f"Failed to purge expired conversation_messages: {exc}",
+                    method="modules.conversation_history.application.purge_expired_messages.execute",
+                    line=39,
+                    thread_id="system",
+                    extra={"error": str(exc), "retention_days": retention_days},
                 )
         return apagadas_por_tenant

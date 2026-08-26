@@ -17,6 +17,7 @@ from modules.tenant_limits.application.ports import (
     UsageCounterPort,
 )
 from modules.tenant_limits.domain.usage_policy import THRESHOLDS, threshold_count
+from modules.observability.interface.logger_factory import get_logger as get_obs_logger
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,13 @@ class NotifyUsageMilestonesUseCase:
             logger.error(
                 "Falha ao processar notificações de marco (tenant_id=%s): %s",
                 tenant_id, exc, exc_info=True,
+            )
+            get_obs_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="usage_milestones").error(
+                message=f"Failed to process usage milestone notifications: {exc}",
+                method="modules.tenant_limits.application.notify_usage_milestones.execute",
+                line=69,
+                thread_id="system",
+                extra={"error": str(exc)},
             )
 
     def _send_milestone_email(

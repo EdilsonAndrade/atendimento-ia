@@ -1,5 +1,6 @@
 # Ponto de Entrada que inicializa a aplicação FastAPI e registra os endpoints da versão 1 (v1) da API.
 # main.py
+import asyncio
 import uvicorn
 import os
 # jwt: A biblioteca PyJWT que vai criar (encode) e ler (decode) os nossos tokens criptografados.
@@ -31,6 +32,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from modules.token.token_verify import verificar_token
 from app.core.limiter import limiter
+from app.core.observability import init_observability, start_observability_flush, shutdown_observability
 from infrastructure.connection import get_db_connection
 from modules.prompt_manager.prompt_manager_repository import PromptManagerRepository
 from prompts.load_prompt import (
@@ -51,6 +53,9 @@ app = FastAPI(
     redoc_url=None,
     openapi_url="/openapi.json"  # COMENTÁRIO: O esquema do OpenAPI continua em /openapi.json
 )
+
+# Constrói o LogService (sem iniciar a task de flush — ver start_observability_flush)
+init_observability()
 
 # ==============================================================================
 # CONFIGURANDO O APP PARA USAR O LIMITADOR
@@ -199,6 +204,31 @@ def seed_node_type_prompts() -> None:
         )
     except Exception as e:
         print(f"⚠️ Alerta: Falha ao rodar o seed de prompts por node_type: {e}")
+
+
+@app.on_event("startup")
+async def start_observability_background_task() -> None:
+    """Precisa ser `async def`: é o único jeito do Starlette rodar o handler
+    diretamente no event loop do uvicorn (handler síncrono roda em threadpool,
+    sem acesso a esse loop). Só aqui `LogService.start()` consegue criar a task
+    de flush no loop que realmente vai executá-la — ver start_observability_flush().
+    """
+    start_observability_flush()
+
+
+@app.on_event("shutdown")
+def shutdown_application() -> None:
+    """Shutdown observability on application shutdown."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # If loop is running, schedule shutdown as a task
+            asyncio.ensure_future(shutdown_observability())
+        else:
+            # If loop is not running, run it directly
+            loop.run_until_complete(shutdown_observability())
+    except Exception as e:
+        print(f"⚠️ Erro ao desligar observabilidade: {e}")
 
 
 # COMENTÁRIO: Lê as variáveis de ambiente com fallback para padrões seguros

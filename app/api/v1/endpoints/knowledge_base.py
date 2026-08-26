@@ -19,6 +19,7 @@ from modules.knowledge_base.infrastructure.postgres_knowledge_base_repository im
     PostgresKnowledgeBaseRepository,
 )
 from modules.tenant.tenant_service import TenantService
+from modules.observability.interface.logger_factory import get_logger
 
 router = APIRouter(prefix="/tenants", tags=["Knowledge Base"])
 
@@ -77,6 +78,13 @@ def upsert_tenant_knowledge_base(
     try:
         document = UpsertTenantKnowledgeBase(repository).execute(tenant_id, payload.content)
     except EmptyKnowledgeBaseContentError as exc:
+        get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="knowledge_base_api").warn(
+            message=f"Knowledge base upsert rejected: {exc}",
+            method="app.api.v1.endpoints.knowledge_base.upsert_tenant_knowledge_base",
+            line=79,
+            thread_id="system",
+            extra={"error": "EMPTY_CONTENT"},
+        )
         raise HTTPException(status_code=422, detail=str(exc))
 
     # Revetorização roda em background — nunca bloqueia a resposta (Princípio V da constituição).

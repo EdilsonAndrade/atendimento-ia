@@ -8,6 +8,7 @@ import logging
 
 from modules.tenant_limits.application.ports import TenantLimitConfigPort, UsageCounterPort
 from modules.tenant_limits.domain.usage_policy import is_over_limit
+from modules.observability.interface.logger_factory import get_logger as get_obs_logger
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +36,24 @@ class CheckTenantLimitUseCase:
                     "monthly_message_limit=%s",
                     tenant_id, thread_id, current_month_calls, monthly_message_limit,
                 )
+                get_obs_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="tenant_limits").warn(
+                    message="Tenant blocked: monthly message limit reached",
+                    method="modules.tenant_limits.application.check_tenant_limit.execute",
+                    line=32,
+                    thread_id=thread_id or "unknown",
+                    extra={"current_month_calls": current_month_calls, "monthly_message_limit": monthly_message_limit},
+                )
             return blocked
         except Exception as exc:
             logger.error(
                 "Falha ao checar limite mensal (tenant_id=%s, thread_id=%s): %s — fail-open (não bloqueando).",
                 tenant_id, thread_id, exc, exc_info=True,
+            )
+            get_obs_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="tenant_limits").error(
+                message=f"Failed to check tenant limit (fail-open): {exc}",
+                method="modules.tenant_limits.application.check_tenant_limit.execute",
+                line=39,
+                thread_id=thread_id or "unknown",
+                extra={"error": str(exc)},
             )
             return False

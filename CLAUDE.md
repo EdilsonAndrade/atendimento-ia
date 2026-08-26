@@ -1,7 +1,7 @@
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan:
-specs/011-conversation-history-followup/plan.md
+specs/012-grafana-loki-observability/plan.md
 ## RULES
 1. Always speak in Portugese in the chat
 2. EVITE ao máximo detalhar muito, SOMENTE quando solicito ou não compreensivo pelo usuário
