@@ -23,6 +23,7 @@ from app.schemas.prompt_manager import (
     TenantPromptOverviewResponse,
     error_detail,
 )
+from modules.observability.interface.logger_factory import get_logger
 router = APIRouter(prefix="/prompt-manager", tags=["Prompt Manager"])
 
 
@@ -90,6 +91,13 @@ def delete_prompt(prompt_id: str):
     except ResourceInUseError as exc:
         # 409: o prompt está vinculado a tenants ativos. Devolve os bloqueadores
         # para a UI listar quem precisa ser realocado antes.
+        get_logger(tenant_id="system", tenant_name="system", agent="prompt_manager_api").warn(
+            message=f"Prompt deletion blocked: {exc}",
+            method="app.api.v1.endpoints.prompt_manager.delete_prompt",
+            line=91,
+            thread_id="system",
+            extra={"error": exc.code, "prompt_id": prompt_id},
+        )
         raise HTTPException(
             status_code=409,
             detail=error_detail(exc.code, str(exc), exc.blockers),
@@ -117,6 +125,13 @@ def delete_guardrail(guardrail_id: str):
         # 409 com dois códigos distintos: GUARDRAIL_IS_GLOBAL (desmarcar global
         # primeiro) e GUARDRAIL_IN_USE_BY_TENANTS (desassociar dos prompts). A
         # ação que o admin precisa tomar é diferente em cada caso.
+        get_logger(tenant_id="system", tenant_name="system", agent="prompt_manager_api").warn(
+            message=f"Guardrail deletion blocked: {exc}",
+            method="app.api.v1.endpoints.prompt_manager.delete_guardrail",
+            line=117,
+            thread_id="system",
+            extra={"error": exc.code, "guardrail_id": guardrail_id},
+        )
         raise HTTPException(
             status_code=409,
             detail=error_detail(exc.code, str(exc), exc.blockers),
@@ -135,6 +150,13 @@ def list_tenants_by_prompt(prompt_id: str):
     try:
         return service.list_tenants_by_prompt(prompt_id)
     except PromptNotFoundError as exc:
+        get_logger(tenant_id="system", tenant_name="system", agent="prompt_manager_api").warn(
+            message=f"Prompt not found: {exc}",
+            method="app.api.v1.endpoints.prompt_manager.list_tenants_by_prompt",
+            line=138,
+            thread_id="system",
+            extra={"error": exc.code, "prompt_id": prompt_id},
+        )
         raise HTTPException(status_code=404, detail=error_detail(exc.code, str(exc)))
 
 
@@ -150,8 +172,22 @@ def link_tenants_bulk(payload: BulkTenantPromptLinkSchema):
             payload.prompt_id, payload.tenant_ids, payload.custom_content_override
         )
     except PromptNotFoundError as exc:
+        get_logger(tenant_id="system", tenant_name="system", agent="prompt_manager_api").warn(
+            message=f"Prompt not found for bulk link: {exc}",
+            method="app.api.v1.endpoints.prompt_manager.link_tenants_bulk",
+            line=153,
+            thread_id="system",
+            extra={"error": exc.code, "prompt_id": payload.prompt_id},
+        )
         raise HTTPException(status_code=404, detail=error_detail(exc.code, str(exc)))
     except TenantsNotFoundError as exc:
+        get_logger(tenant_id="system", tenant_name="system", agent="prompt_manager_api").warn(
+            message=f"Tenants not found for bulk link: {exc}",
+            method="app.api.v1.endpoints.prompt_manager.link_tenants_bulk",
+            line=155,
+            thread_id="system",
+            extra={"error": exc.code, "prompt_id": payload.prompt_id},
+        )
         raise HTTPException(status_code=404, detail=error_detail(exc.code, str(exc), exc.blockers))
 
 @router.get(
@@ -168,4 +204,11 @@ def get_tenant_prompt_details(tenant_id: str, node_type: NodeType = "operational
     try:
         return service.get_tenant_prompt_details(tenant_id, node_type=node_type)
     except DefaultPromptNotConfiguredError as exc:
+        get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="prompt_manager_api").error(
+            message=f"Default prompt not configured: {exc}",
+            method="app.api.v1.endpoints.prompt_manager.get_tenant_prompt_details",
+            line=170,
+            thread_id="system",
+            extra={"error": "DEFAULT_PROMPT_NOT_CONFIGURED", "node_type": str(node_type)},
+        )
         raise HTTPException(status_code=500, detail=str(exc))

@@ -11,6 +11,7 @@ from typing import Any
 
 from modules.token_usage.application.ports import RetryQueuePort, TokenUsageRepository
 from modules.token_usage.domain.token_usage_record import TokenUsageRecord, calculate_cost_usd
+from modules.observability.interface.logger_factory import get_logger as get_obs_logger
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,13 @@ class RecordTokenUsageUseCase:
                     exc,
                     exc_info=True,
                 )
+                get_obs_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="token_usage").error(
+                    message=f"Failed to record token usage: {exc}",
+                    method="modules.token_usage.application.record_token_usage.execute",
+                    line=72,
+                    thread_id=thread_id or base_thread_id or "unknown",
+                    extra={"error": str(exc), "node_type": node_type},
+                )
                 self._publish_to_retry_queue(record)
         except Exception as exc:
             logger.error(
@@ -87,6 +95,13 @@ class RecordTokenUsageUseCase:
                 node_type,
                 exc,
                 exc_info=True,
+            )
+            get_obs_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="token_usage").error(
+                message=f"Failed to record token usage: {exc}",
+                method="modules.token_usage.application.record_token_usage.execute",
+                line=82,
+                thread_id=thread_id or base_thread_id or "unknown",
+                extra={"error": str(exc), "node_type": node_type},
             )
 
     def _publish_to_retry_queue(self, record: TokenUsageRecord) -> None:
@@ -101,4 +116,11 @@ class RecordTokenUsageUseCase:
             logger.error(
                 "Falha ao publicar registro de uso de token na fila de retry (tenant_id=%s): %s",
                 record.tenant_id, exc, exc_info=True,
+            )
+            get_obs_logger(tenant_id=record.tenant_id, tenant_name=record.tenant_id, agent="token_usage").error(
+                message=f"Failed to publish token usage to retry queue (data lost): {exc}",
+                method="modules.token_usage.application.record_token_usage._publish_to_retry_queue",
+                line=100,
+                thread_id=record.thread_id or record.base_thread_id or "unknown",
+                extra={"error": str(exc)},
             )

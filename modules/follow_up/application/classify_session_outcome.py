@@ -14,6 +14,7 @@ from datetime import date
 
 from modules.follow_up.application.ports import FollowUpQueueRepository, SessionOutcomeClassifierPort
 from modules.follow_up.domain.follow_up_entry import FollowUpEntry, Outcome
+from modules.observability.interface.logger_factory import get_logger
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,13 @@ class ClassifySessionOutcomeUseCase:
                     "Outcome inválido devolvido pelo classificador (tenant_id=%s, base_thread_id=%s): %r",
                     tenant_id, base_thread_id, outcome_bruto,
                 )
+                get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="follow_up_classifier").error(
+                    message=f"Invalid outcome returned by classifier: {outcome_bruto!r}",
+                    method="modules.follow_up.application.classify_session_outcome.execute",
+                    line=46,
+                    thread_id=active_thread_id,
+                    extra={"error": "INVALID_OUTCOME"},
+                )
                 return None
 
             entry = FollowUpEntry(
@@ -67,5 +75,12 @@ class ClassifySessionOutcomeUseCase:
             logger.error(
                 "Falha ao classificar outcome da sessão (tenant_id=%s, base_thread_id=%s, active_thread_id=%s): %s",
                 tenant_id, base_thread_id, active_thread_id, exc, exc_info=True,
+            )
+            get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="follow_up_classifier").error(
+                message=f"Session outcome classification failed: {exc}",
+                method="modules.follow_up.application.classify_session_outcome.execute",
+                line=66,
+                thread_id=active_thread_id,
+                extra={"error": str(exc)},
             )
             return None

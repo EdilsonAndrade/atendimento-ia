@@ -8,6 +8,7 @@ import logging
 
 from modules.conversation_history.application.ports import ConversationMessageRepository
 from modules.conversation_history.domain.conversation_message import ConversationMessage
+from modules.observability.interface.logger_factory import get_logger
 
 logger = logging.getLogger(__name__)
 
@@ -47,4 +48,11 @@ class RecordConversationTurnUseCase:
                 base_thread_id,
                 exc,
                 exc_info=True,
+            )
+            get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="conversation_history").error(
+                message=f"Failed to record conversation turn: {exc}",
+                method="modules.conversation_history.application.record_conversation_turn.execute",
+                line=43,
+                thread_id=active_thread_id,
+                extra={"error": str(exc)},
             )

@@ -20,6 +20,7 @@ from modules.tenant.tenant_service import (
 from modules.tenant_limits.domain.usage_policy import is_over_limit, percentage_used
 from modules.tenant_limits.infrastructure.postgres_tenant_limit_config import PostgresTenantLimitConfig
 from modules.tenant_limits.infrastructure.postgres_usage_counter import PostgresUsageCounter
+from modules.observability.interface.logger_factory import get_logger
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
 
@@ -80,8 +81,22 @@ def create_tenant(tenant_data: TenantCreate, tenant_service: TenantService = Dep
     try:
         return tenant_service.create_tenant(tenant_data.dict())
     except PromptNotFoundError as exc:
+        get_logger(tenant_id=tenant_data.tenant_id, tenant_name=tenant_data.tenant_id, agent="tenant_api").error(
+            message=f"Tenant creation failed: prompt not found: {exc}",
+            method="app.api.v1.endpoints.tenant.create_tenant",
+            line=81,
+            thread_id="system",
+            extra={"error": "PROMPT_NOT_FOUND"},
+        )
         raise HTTPException(status_code=404, detail=error_detail("PROMPT_NOT_FOUND", str(exc)))
     except PromptNodeTypeInvalidError as exc:
+        get_logger(tenant_id=tenant_data.tenant_id, tenant_name=tenant_data.tenant_id, agent="tenant_api").error(
+            message=f"Tenant creation failed: invalid node type: {exc}",
+            method="app.api.v1.endpoints.tenant.create_tenant",
+            line=81,
+            thread_id="system",
+            extra={"error": "PROMPT_NODE_TYPE_INVALID"},
+        )
         raise HTTPException(
             status_code=400, detail=error_detail("PROMPT_NODE_TYPE_INVALID", str(exc))
         )

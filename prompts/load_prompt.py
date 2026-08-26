@@ -7,6 +7,7 @@ from prompts.prompt_resolver import (
     resolver_guardrails_list,
     resolver_prompt_e_guardrails,
 )
+from modules.observability.interface.logger_factory import get_logger as get_obs_logger
 
 # Caminhos locais para os arquivos Markdown (Plano de Contingência / Fallback)
 PROMPTS_DIR = Path(__file__).resolve().parent
@@ -135,6 +136,13 @@ def carregar_guardrails(tenant_id):
 
     except Exception as e:
         print(f"[WARN] Falha ao carregar guardrails do banco para tenant {tenant_id}: {e}. Usando fallback local.")
+        get_obs_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="prompt_loader").error(
+            message=f"Failed to load guardrails from DB, using local fallback: {e}",
+            method="prompts.load_prompt.carregar_guardrails",
+            line=136,
+            thread_id="unknown",
+            extra={"error": str(e)},
+        )
         return GUARDRAIL_PATH.read_text(encoding="utf-8")
 
 
@@ -198,12 +206,26 @@ def carregar_operacional_prompt(tenant_id, tabela_calendario_str, hora_atual_str
             f"'operational' vinculado. O atendimento NÃO será respondido até que um "
             f"prompt seja vinculado no Painel Administrador. Detalhe: {e}"
         )
+        get_obs_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="prompt_loader").error(
+            message=f"Tenant has no operational prompt configured — service is DOWN for this tenant: {e}",
+            method="prompts.load_prompt.carregar_operacional_prompt",
+            line=193,
+            thread_id="unknown",
+            extra={"error": "PROMPT_CONFIGURATION_MISSING"},
+        )
         raise
 
     except Exception as e:
         # Falha de INFRAESTRUTURA (banco indisponível): mantém o atendimento em pé
         # com o conteúdo local. É o único caminho que ainda lê os arquivos .md.
         print(f"[WARN] Falha ao carregar prompt do banco para tenant {tenant_id}: {e}. Usando fallback local.")
+        get_obs_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="prompt_loader").error(
+            message=f"Failed to load operational prompt from DB, using local fallback: {e}",
+            method="prompts.load_prompt.carregar_operacional_prompt",
+            line=203,
+            thread_id="unknown",
+            extra={"error": str(e)},
+        )
         return _carregar_fallback_local(
             tenant_id=tenant_id,
             tabela_calendario_str=tabela_calendario_str,
@@ -254,6 +276,13 @@ def carregar_institutional_prompt(tenant_id, contexto_formatado, historico_texto
 
     except Exception as e:
         print(f"[WARN] Falha ao carregar prompt institutional do banco para tenant {tenant_id}: {e}. Usando fallback local.")
+        get_obs_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="prompt_loader").error(
+            message=f"Failed to load institutional prompt from DB, using local fallback: {e}",
+            method="prompts.load_prompt.carregar_institutional_prompt",
+            line=255,
+            thread_id="unknown",
+            extra={"error": str(e)},
+        )
         template = INSTITUTIONAL_PROMPT_PATH.read_text(encoding="utf-8")
         return _aplicar_guardrails(
             template,
@@ -302,6 +331,13 @@ def carregar_chitchat_prompt(tenant_id):
 
     except Exception as e:
         print(f"[WARN] Falha ao carregar prompt de chitchat do banco para tenant {tenant_id}: {e}. Usando fallback local.")
+        get_obs_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="prompt_loader").error(
+            message=f"Failed to load chitchat prompt from DB, using local fallback: {e}",
+            method="prompts.load_prompt.carregar_chitchat_prompt",
+            line=303,
+            thread_id="unknown",
+            extra={"error": str(e)},
+        )
         template = CHITCHAT_PROMPT_PATH.read_text(encoding="utf-8")
         return _aplicar_guardrails(
             template,

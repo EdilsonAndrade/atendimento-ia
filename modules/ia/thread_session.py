@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 import psycopg
 
 from infrastructure.connection import DB_URI
+from modules.observability.interface.logger_factory import get_logger
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,13 @@ def resolve_active_thread_id(base_thread_id: str, idle_minutes: float = SESSION_
         return active_thread_id
     except Exception as e:
         print(f"⚠️ Erro ao resolver sessão de thread para {base_thread_id}: {e}. Usando thread_id base.")
+        get_logger(tenant_id=_extract_tenant_id(base_thread_id), tenant_name=_extract_tenant_id(base_thread_id), agent="thread_session").error(
+            message=f"Failed to resolve active thread session: {e}",
+            method="modules.ia.thread_session.resolve_active_thread_id",
+            line=82,
+            thread_id=base_thread_id,
+            extra={"error": str(e)},
+        )
         return base_thread_id
 
 
@@ -189,6 +197,13 @@ def generate_and_store_session_summary(base_thread_id: str, expired_active_threa
                 "Falha ao buscar oferta_vigente do tenant %s para o rascunho de follow-up: %s",
                 tenant_id, exc, exc_info=True,
             )
+            get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="thread_session").error(
+                message=f"Failed to fetch oferta_vigente for follow-up draft: {exc}",
+                method="modules.ia.thread_session.generate_and_store_session_summary",
+                line=187,
+                thread_id=base_thread_id,
+                extra={"error": str(exc)},
+            )
 
         resultado = _summarize_session(
             messages, tenant_id, base_thread_id, expired_active_thread_id,
@@ -220,6 +235,13 @@ def generate_and_store_session_summary(base_thread_id: str, expired_active_threa
             exc,
             exc_info=True,
         )
+        get_logger(tenant_id=_extract_tenant_id(base_thread_id), tenant_name=_extract_tenant_id(base_thread_id), agent="thread_session").error(
+            message=f"Failed to generate session summary: {exc}",
+            method="modules.ia.thread_session.generate_and_store_session_summary",
+            line=215,
+            thread_id=expired_active_thread_id,
+            extra={"error": str(exc)},
+        )
 
 
 def get_latest_session_summary(base_thread_id: str) -> dict | None:
@@ -244,6 +266,13 @@ def get_latest_session_summary(base_thread_id: str) -> dict | None:
                 return {"resumo": resumo, "fatos": fatos or {}}
     except Exception as e:
         print(f"⚠️ Erro ao consultar resumo de sessão para {base_thread_id}: {e}")
+        get_logger(tenant_id=_extract_tenant_id(base_thread_id), tenant_name=_extract_tenant_id(base_thread_id), agent="thread_session").error(
+            message=f"Failed to fetch latest session summary: {e}",
+            method="modules.ia.thread_session.get_latest_session_summary",
+            line=245,
+            thread_id=base_thread_id,
+            extra={"error": str(e)},
+        )
         return None
 
 

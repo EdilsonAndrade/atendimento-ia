@@ -37,6 +37,7 @@ from util.ai_helpers import (
 )
 from util.time_helpers import get_tabela_dias
 from util.prompt_logger import log_llm_prompt
+from modules.observability.interface.logger_factory import get_logger
 # ============================================================================
 # ALTERAÇÃO DE IMPORT: Substitui o VectorManager antigo pelo GerenciadorVetores
 # ============================================================================
@@ -244,14 +245,14 @@ static_tools = [
     cancelar_agendamento, 
     consulta_agendamento
 ]
-def get_tenant_tools(tenant_id: str, tenant_service, calendar_service):
+def get_tenant_tools(tenant_id: str, tenant_service, calendar_service, thread_id: str = "unknown"):
     return [
-        build_agendar_tool(tenant_id, tenant_service, calendar_service),
-        build_consulta_tool(tenant_id, tenant_service, calendar_service),
-        build_delete_tool(tenant_id, tenant_service, calendar_service),
+        build_agendar_tool(tenant_id, tenant_service, calendar_service, thread_id),
+        build_consulta_tool(tenant_id, tenant_service, calendar_service, thread_id),
+        build_delete_tool(tenant_id, tenant_service, calendar_service, thread_id),
     ]
 
-def get_active_tools(tenant_id: str):
+def get_active_tools(tenant_id: str, thread_id: str = "unknown"):
     """Resolve as tools de agendamento do tenant a partir de uma capacidade
     explícita (`scheduling_enabled`), não de um efeito colateral.
 
@@ -270,7 +271,7 @@ def get_active_tools(tenant_id: str):
         active_tools = []
         backend = "scheduling_disabled"
     elif google_calendar_id:
-        active_tools = get_tenant_tools(tenant_id, tenant_service, calendar_service)
+        active_tools = get_tenant_tools(tenant_id, tenant_service, calendar_service, thread_id)
         backend = "google_calendar"
     else:
         active_tools = static_tools
@@ -347,6 +348,7 @@ def routing_agent(state: AgentState, config: RunnableConfig):
 
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
+    thread_id = configurable.get("thread_id", "unknown")
 
     # A classificação de intenção é decidida inteiramente pelo LLM abaixo — foi
     # removido o atalho por palavra-chave que forçava OPERATIONAL sempre que a
@@ -438,6 +440,13 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         decisao = intencao_anterior or "INSTITUTIONAL"
 
     print(f"\n --- [NÓ: routing_agent] Roteador definiu a intenção: [{decisao}] ---")
+    get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="routing_agent").info(
+        message=f"Routing decision: {decisao}",
+        method="modules.ia.agent_graph.routing_agent",
+        line=440,
+        thread_id=thread_id,
+        extra={"decision": decisao},
+    )
     return {"messages": [AIMessage(content=f"Routing decision: {decisao}")]}
 
 
@@ -530,11 +539,12 @@ def operational_node(state: AgentState, config: RunnableConfig):
     Nó Operacional que preserva as ToolMessages no estado para evitar Loops Infinitos.
     """
     print("\n --- [NÓ: operational_node] Modelo avaliando fluxo de atendimento... ---")
-    
+
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
-    
-   
+    thread_id = configurable.get("thread_id", "unknown")
+
+
     # Busca a última pergunta do usuário apenas para o RAG
     pergunta_usuario = ""
     for msg in reversed(state["messages"]):
@@ -623,6 +633,13 @@ def operational_node(state: AgentState, config: RunnableConfig):
             f" -> 🛡️ [GUARDRAIL] Resposta sem tool_calls reprovada ({guardrail_acionado}): "
             f"{resposta_ia.content!r}. Forçando nova tentativa com tool_choice='required'."
         )
+        get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="operational_node").warn(
+            message=f"Guardrail triggered: {guardrail_acionado}",
+            method="modules.ia.agent_graph.operational_node",
+            line=630,
+            thread_id=thread_id,
+            extra={"reason": guardrail_acionado, "content": resposta_ia.content},
+        )
         llm_forcado = llm.bind_tools(all_active_tools, tool_choice="required", parallel_tool_calls=False)
         resposta_ia = llm_forcado.invoke(mensagens_para_ia)
         record_llm_usage(resposta_ia, config, node_type="operational_node")
@@ -635,6 +652,13 @@ def operational_node(state: AgentState, config: RunnableConfig):
                 f" -> ❌ [GUARDRAIL] tool_choice='required' não corrigiu a resposta "
                 f"(tenant_id={tenant_id}). Bloqueando envio do conteúdo original."
             )
+            get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="operational_node").error(
+                message="Guardrail unresolved after tool_choice=required",
+                method="modules.ia.agent_graph.operational_node",
+                line=644,
+                thread_id=thread_id,
+                extra={"error": "GUARDRAIL_UNRESOLVED"},
+            )
             resposta_ia = AIMessage(content=(
                 "Desculpa, tive um problema para verificar isso agora. Pode repetir "
                 "sua última mensagem, por favor?"
@@ -645,6 +669,13 @@ def operational_node(state: AgentState, config: RunnableConfig):
         print(
             f" -> ❌ [GUARDRAIL] Vazamento de markup sem tools ativas (tenant_id={tenant_id}). "
             f"Bloqueando envio do conteúdo original: {resposta_ia.content!r}"
+        )
+        get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="operational_node").error(
+            message="Markup leak with no active tools",
+            method="modules.ia.agent_graph.operational_node",
+            line=655,
+            thread_id=thread_id,
+            extra={"error": "MARKUP_LEAK", "content": resposta_ia.content},
         )
         resposta_ia = AIMessage(content=(
             "Desculpa, tive um problema para processar isso agora. Pode repetir "
@@ -686,6 +717,7 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
 
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
+    thread_id = configurable.get("thread_id", "unknown")
 
     # 1. Carrega o prompt do chitchat_node do tenant (vínculo próprio > padrão do nó >
     # texto fixo local), já com os guardrails aplicáveis embutidos (EDI-42)
@@ -725,6 +757,13 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
         return {"messages": [AIMessage(content=resposta_ia.content)]}
     except Exception as e:
         print(f" ⚠️ ERRO NO CHITCHAT_NODE: {str(e)}")
+        get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="chitchat_node").error(
+            message=f"Chitchat node error: {e}",
+            method="modules.ia.agent_graph.chitchat_node",
+            line=758,
+            thread_id=thread_id,
+            extra={"error": str(e)},
+        )
         # Fallback seguro caso a API da LLM oscile no chitchat
         return {"messages": [AIMessage(content="Meu foco é exclusivo no atendimento e agendamento de serviços da empresa. Como posso te ajudar com nossos horários ou serviços hoje?")]}
 
@@ -779,6 +818,13 @@ def _make_pre_end_guardrail_router(node_name: str):
             f"Redirecionando para operational_node para executar a ação real de calendário "
             f"antes de responder ao cliente."
         )
+        get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent=node_name).warn(
+            message=f"Calendar guardrail redirect: {guardrail_acionado}",
+            method="modules.ia.agent_graph._make_pre_end_guardrail_router",
+            line=808,
+            thread_id=thread_id,
+            extra={"reason": guardrail_acionado, "excerpt": trecho, "redirected_to": "operational_node"},
+        )
         return "operational_node"
 
     return _router
@@ -797,8 +843,9 @@ _chitchat_output_router = _make_pre_end_guardrail_router("chitchat_node")
 def dynamic_tool_node(state: AgentState, config: RunnableConfig):
     configurable = config.get("configurable", {})
     tenant_id = configurable.get("tenant_id", "default_tenant")
-    
-    active_tools = get_active_tools(tenant_id)
+    thread_id = configurable.get("thread_id", "unknown")
+
+    active_tools = get_active_tools(tenant_id, thread_id)
     
     node = ToolNode(tools=active_tools, handle_tool_errors=True)
     result = node.invoke(state)

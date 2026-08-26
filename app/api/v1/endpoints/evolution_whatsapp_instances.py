@@ -8,6 +8,7 @@ import httpx
 import logging
 
 from modules.webhook.whatsapp import salvar_instancia_banco
+from modules.observability.interface.logger_factory import get_logger
 
 logger = logging.getLogger("whatsapp_instances")
 
@@ -68,6 +69,13 @@ async def criar_instancia_whatsapp(payload: CreateInstanceRequest):
             
             if response_create.status_code not in [200, 201]:
                 logger.error(f"[Evolution API] Erro ao criar instância: {response_create.text}")
+                get_logger(tenant_id=payload.tenant_id, tenant_name=payload.tenant_id, agent="whatsapp_instances_api").error(
+                    message=f"Evolution API instance creation failed: {response_create.status_code}",
+                    method="app.api.v1.endpoints.evolution_whatsapp_instances.criar_instancia_whatsapp",
+                    line=70,
+                    thread_id="system",
+                    extra={"error": response_create.text, "status_code": response_create.status_code},
+                )
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Falha ao criar instância na Evolution API"
@@ -104,12 +112,26 @@ async def criar_instancia_whatsapp(payload: CreateInstanceRequest):
 
         except httpx.RequestError as exc:
             logger.error(f"Erro de conexão com Evolution API: {str(exc)}")
+            get_logger(tenant_id=payload.tenant_id, tenant_name=payload.tenant_id, agent="whatsapp_instances_api").error(
+                message=f"Evolution API connection error: {exc}",
+                method="app.api.v1.endpoints.evolution_whatsapp_instances.criar_instancia_whatsapp",
+                line=105,
+                thread_id="system",
+                extra={"error": str(exc)},
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Serviço da Evolution API indisponível no momento"
             )
         except Exception as ex:
             logger.error(f"Erro interno ao processar criação de instância: {str(ex)}")
+            get_logger(tenant_id=payload.tenant_id, tenant_name=payload.tenant_id, agent="whatsapp_instances_api").error(
+                message=f"Unexpected error creating WhatsApp instance: {ex}",
+                method="app.api.v1.endpoints.evolution_whatsapp_instances.criar_instancia_whatsapp",
+                line=111,
+                thread_id="system",
+                extra={"error": str(ex)},
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Erro interno no servidor: {str(ex)}"

@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from fastapi import  HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+from modules.observability.interface.logger_factory import get_logger
+
 security = HTTPBearer()
 SECRET_KEY = os.getenv("SECRET_KEY", "mudar_senha_123")
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
@@ -27,7 +29,21 @@ def verificar_token(credentials: HTTPAuthorizationCredentials = Security(securit
         
     except jwt.ExpiredSignatureError:
         # Cai aqui se o token passou do tempo de validade (ex: 30 minutos)
+        get_logger(tenant_id="unknown", tenant_name="unknown", agent="token_verify").warn(
+            message="JWT expired",
+            method="modules.token.token_verify.verificar_token",
+            line=28,
+            thread_id="system",
+            extra={"error": "TOKEN_EXPIRED"},
+        )
         raise HTTPException(status_code=401, detail="Sessão expirada. Recarregue o site.")
     except jwt.InvalidTokenError:
         # Cai aqui se um hacker tentar enviar um token inventado
+        get_logger(tenant_id="unknown", tenant_name="unknown", agent="token_verify").warn(
+            message="Invalid JWT rejected",
+            method="modules.token.token_verify.verificar_token",
+            line=31,
+            thread_id="system",
+            extra={"error": "TOKEN_INVALID"},
+        )
         raise HTTPException(status_code=401, detail="Token de segurança inválido.")

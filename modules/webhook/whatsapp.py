@@ -19,6 +19,7 @@ from modules.conversation_history.infrastructure.postgres_conversation_message_r
     PostgresConversationMessageRepository,
 )
 from dotenv import load_dotenv
+from modules.observability.interface.logger_factory import get_logger
 load_dotenv()  # Carrega variáveis de ambiente do arquivo .env
 logger = logging.getLogger("whatsapp_webhook")
 
@@ -244,6 +245,13 @@ async def processar_mensagem_e_responder(
 
         except Exception as ex:
             logger.error(f"[WhatsApp-WebHook] Erro no grafo do tenant {tenant_id} para {sender_phone}: {str(ex)}")
+            get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="whatsapp_webhook").error(
+                message=f"WhatsApp message processing failed: {ex}",
+                method="modules.webhook.whatsapp.processar_mensagem_e_responder",
+                line=245,
+                thread_id=thread_id_base,
+                extra={"error": str(ex)},
+            )
             # COMENTÁRIO 2: Define a mensagem de erro APENAS se o Grafo não tiver retornado nada antes
             if not resposta_final:
                 resposta_final = "Desculpe, tive um problema ao processar sua solicitação. Pode tentar novamente em instantes?"
@@ -275,5 +283,12 @@ async def processar_mensagem_e_responder(
                         logger.error(f"[WhatsApp Error] Falha Evolution API ({response.status_code}): {response.text}")
             except Exception as err_send:
                 logger.error(f"[WhatsApp Error] Falha ao enviar resposta para o WhatsApp: {str(err_send)}")
+                get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="whatsapp_webhook").error(
+                    message=f"Failed to send WhatsApp reply: {err_send}",
+                    method="modules.webhook.whatsapp.processar_mensagem_e_responder",
+                    line=276,
+                    thread_id=thread_id_base,
+                    extra={"error": str(err_send)},
+                )
 
         _conversation_last_finished_at[conversation_key] = asyncio.get_running_loop().time()
