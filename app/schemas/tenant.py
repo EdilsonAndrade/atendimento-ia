@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime
 class TenantRequest(BaseModel):
     tenant_id: str = Field(..., description="O ID do cliente que solicita a criação do tenant.")
@@ -34,6 +34,16 @@ class TenantCreate(BaseModel):
         True,
         description="Se TRUE, o agente oferece tools de agendamento (agendar/consultar/cancelar) a este tenant.",
     )
+    # EDI-63: teto agregado de chamadas de LLM/mês do tenant. NULL = sem limite
+    # (comportamento atual preservado). Contagem por chamada de LLM, não por
+    # mensagem real do cliente final — ver specs/010-tenant-message-limit/spec.md.
+    monthly_message_limit: int | None = Field(
+        None, description="Teto mensal de chamadas de LLM do tenant. NULL = sem limite."
+    )
+    notification_emails: list[EmailStr] = Field(
+        default_factory=list,
+        description="E-mails do tenant que recebem os avisos de 50/80/100%/reset do limite mensal.",
+    )
 
 class TenantUpdate(BaseModel):
     name: str = Field(..., description="O nome do tenant.")
@@ -42,6 +52,13 @@ class TenantUpdate(BaseModel):
     scheduling_enabled: bool = Field(
         True,
         description="Se TRUE, o agente oferece tools de agendamento (agendar/consultar/cancelar) a este tenant.",
+    )
+    monthly_message_limit: int | None = Field(
+        None, description="Teto mensal de chamadas de LLM do tenant. NULL = sem limite."
+    )
+    notification_emails: list[EmailStr] = Field(
+        default_factory=list,
+        description="E-mails do tenant que recebem os avisos de 50/80/100%/reset do limite mensal.",
     )
 
 class TenantResponse(BaseModel):
@@ -53,6 +70,28 @@ class TenantResponse(BaseModel):
     allowed_domains: list[str] = Field(..., description="Lista de domínios autorizados para o tenant.")
     deleted_at: datetime | None = Field(None, description="Data e hora da exclusão do tenant no formato ISO 8601, se aplicável.")
     scheduling_enabled: bool = Field(..., description="Se TRUE, o agente oferece tools de agendamento a este tenant.")
+    monthly_message_limit: int | None = Field(None, description="Teto mensal de chamadas de LLM do tenant. NULL = sem limite.")
+    notification_emails: list[str] = Field(
+        default_factory=list,
+        description="E-mails do tenant que recebem os avisos de 50/80/100%/reset do limite mensal.",
+    )
+
+
+class TenantUsageResponse(BaseModel):
+    tenant_id: str = Field(..., description="ID do tenant consultado.")
+    monthly_message_limit: int | None = Field(None, description="Teto mensal configurado, NULL se sem limite.")
+    current_month_calls: int = Field(..., description="Chamadas de LLM contabilizadas no mês corrente.")
+    percentage_used: float | None = Field(None, description="Percentual do limite consumido; NULL se sem limite.")
+    blocked: bool = Field(..., description="Se TRUE, o tenant está bloqueado neste momento.")
+
+
+class TenantMessageLimitConfigResponse(BaseModel):
+    worst_case_calls_per_message: int = Field(
+        ..., description="Chamadas de LLM no pior caso (todos os nós acionados) para 1 mensagem real."
+    )
+    average_calls_per_message: float = Field(
+        ..., description="Chamadas de LLM médias estimadas para 1 mensagem real."
+    )
 
 
 class DeleteResponse(BaseModel):

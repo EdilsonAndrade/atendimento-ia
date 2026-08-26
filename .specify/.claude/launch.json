@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "interasisai-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "C:\\projects\\interasisai-web", "run", "dev", "--", "-p", "3011"],
+      "port": 3011
+    }
+  ]
+}

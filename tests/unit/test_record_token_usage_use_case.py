@@ -104,5 +104,90 @@ def test_execute_falha_do_repositorio_nao_propaga(caplog):
     )
 
 
+class _FakeRetryQueue:
+    def __init__(self, raise_on_publish: Exception | None = None):
+        self.published = []
+        self._raise_on_publish = raise_on_publish
+
+    def publish(self, record):
+        if self._raise_on_publish:
+            raise self._raise_on_publish
+        self.published.append(record)
+
+
+def test_execute_falha_do_repositorio_publica_na_retry_queue():
+    """EDI-63: quando o INSERT direto falha, o registro vai para a fila de retry
+    em vez de só ser perdido."""
+    repo = _FakeRepository(raise_on_save=RuntimeError("Postgres indisponível"))
+    retry_queue = _FakeRetryQueue()
+    use_case = RecordTokenUsageUseCase(
+        repo,
+        price_per_1k_input=Decimal("0.27"),
+        price_per_1k_output=Decimal("1.10"),
+        retry_queue=retry_queue,
+    )
+    response = _FakeResponse(usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
+
+    use_case.execute(
+        response=response,
+        tenant_id="tenant_x",
+        base_thread_id="tenant_x:sessao_1",
+        thread_id="tenant_x:sessao_1#abc",
+        node_type="operational_node",
+    )
+
+    assert len(retry_queue.published) == 1
+    published_record = retry_queue.published[0]
+    assert published_record.tenant_id == "tenant_x"
+    assert published_record.base_thread_id == "tenant_x:sessao_1"
+    assert published_record.node_type == "operational_node"
+
+
+def test_execute_sucesso_nao_publica_na_retry_queue():
+    repo = _FakeRepository()
+    retry_queue = _FakeRetryQueue()
+    use_case = RecordTokenUsageUseCase(
+        repo,
+        price_per_1k_input=Decimal("0.27"),
+        price_per_1k_output=Decimal("1.10"),
+        retry_queue=retry_queue,
+    )
+    response = _FakeResponse(usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
+
+    use_case.execute(
+        response=response,
+        tenant_id="tenant_x",
+        base_thread_id="tenant_x:sessao_1",
+        thread_id=None,
+        node_type="chitchat_node",
+    )
+
+    assert retry_queue.published == []
+    assert len(repo.saved) == 1
+
+
+def test_execute_falha_ao_publicar_na_retry_queue_tambem_nao_propaga():
+    """Mesma filosofia do FR-006: mesmo se a publicação na fila de retry falhar,
+    a exceção nunca escapa do use case."""
+    repo = _FakeRepository(raise_on_save=RuntimeError("Postgres indisponível"))
+    retry_queue = _FakeRetryQueue(raise_on_publish=RuntimeError("Redis indisponível"))
+    use_case = RecordTokenUsageUseCase(
+        repo,
+        price_per_1k_input=Decimal("0.27"),
+        price_per_1k_output=Decimal("1.10"),
+        retry_queue=retry_queue,
+    )
+    response = _FakeResponse(usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
+
+    # Não deve levantar exceção nenhuma.
+    use_case.execute(
+        response=response,
+        tenant_id="tenant_x",
+        base_thread_id="tenant_x:sessao_1",
+        thread_id=None,
+        node_type="operational_node",
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

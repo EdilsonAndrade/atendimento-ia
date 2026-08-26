@@ -1,11 +1,15 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from app.schemas.tenant import (
     DeleteResponse,
     TenantCreate,
     TenantDeleteImpactResponse,
     TenantListResponse,
+    TenantMessageLimitConfigResponse,
     TenantResponse,
     TenantUpdate,
+    TenantUsageResponse,
 )
 from app.schemas.prompt_manager import error_detail
 from modules.tenant.tenant_service import (
@@ -13,8 +17,19 @@ from modules.tenant.tenant_service import (
     PromptNotFoundError,
     TenantService,
 )
+from modules.tenant_limits.domain.usage_policy import is_over_limit, percentage_used
+from modules.tenant_limits.infrastructure.postgres_tenant_limit_config import PostgresTenantLimitConfig
+from modules.tenant_limits.infrastructure.postgres_usage_counter import PostgresUsageCounter
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
+
+
+def get_tenant_limit_config() -> PostgresTenantLimitConfig:
+    return PostgresTenantLimitConfig()
+
+
+def get_usage_counter() -> PostgresUsageCounter:
+    return PostgresUsageCounter()
 
 
 @router.get("", response_model=list[TenantResponse], summary="Buscar tenants por nome ou id")
@@ -38,6 +53,20 @@ def list_tenants(
     tenant_service: TenantService = Depends(),
 ):
     return tenant_service.list_tenants(q, limit, offset)
+
+
+@router.get(
+    "/message-limit-config",
+    response_model=TenantMessageLimitConfigResponse,
+    summary="Razão de chamadas de LLM por mensagem real — base da calculadora de dimensionamento de plano (EDI-63)",
+)
+def get_message_limit_config():
+    """Registrado ANTES de `/{tenant_id}` de propósito — senão `/message-limit-config`
+    seria capturado como um `tenant_id` literal (mesmo motivo de `/list` vir antes)."""
+    return TenantMessageLimitConfigResponse(
+        worst_case_calls_per_message=int(os.getenv("TENANT_LIMIT_WORST_CASE_CALLS_PER_MESSAGE", "3")),
+        average_calls_per_message=float(os.getenv("TENANT_LIMIT_AVERAGE_CALLS_PER_MESSAGE", "3")),
+    )
 
 
 @router.post("/", response_model=TenantResponse)
@@ -73,6 +102,29 @@ def update_tenant(tenant_id: str, tenant_data: TenantUpdate, tenant_service: Ten
     if updated_tenant is None:
         raise HTTPException(status_code=404, detail="Tenant not found")
     return updated_tenant
+
+@router.get("/{tenant_id}/usage", response_model=TenantUsageResponse)
+def get_tenant_usage(
+    tenant_id: str,
+    tenant_service: TenantService = Depends(),
+    tenant_limit_config: PostgresTenantLimitConfig = Depends(get_tenant_limit_config),
+    usage_counter: PostgresUsageCounter = Depends(get_usage_counter),
+):
+    """Consumo do mês corrente — base do indicador visual da UI admin (EDI-63)."""
+    if tenant_service.get_tenant(tenant_id) is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    monthly_message_limit, _ = tenant_limit_config.get_limit_and_emails(tenant_id)
+    current_month_calls = usage_counter.count_current_month(tenant_id)
+
+    return TenantUsageResponse(
+        tenant_id=tenant_id,
+        monthly_message_limit=monthly_message_limit,
+        current_month_calls=current_month_calls,
+        percentage_used=percentage_used(current_month_calls, monthly_message_limit),
+        blocked=is_over_limit(current_month_calls, monthly_message_limit),
+    )
+
 
 @router.get("/{tenant_id}/delete-impact", response_model=TenantDeleteImpactResponse)
 def get_tenant_delete_impact(tenant_id: str, tenant_service: TenantService = Depends()):
