@@ -218,17 +218,25 @@ class AgentState(TypedDict):
 # reforçada) — é o passo de deliberação que faltava para o modelo decidir chamar a tool em
 # vez de narrar/alucinar o resultado em texto. Se o comportamento de piada fora de contexto
 # voltar, descomentar o bloco "thinking" abaixo para religar o modo antigo.
-llm = ChatOpenAI(
-    model=llm_model,
-    api_key=api_key,
-    base_url="https://api.deepseek.com/v1", # Garanta que a base URL aponta para a API do DeepSeek
-    temperature=0,
-    extra_body={
-        "thinking": {
-             "type": "disabled"
+# Envolvido em try/except (mesmo padrão do tenant_service/calendar_service/vector_manager_global
+# acima) para que a ausência de API_KEY no ambiente (ex.: coleta de testes fora de container,
+# onde o .env não é carregado — ver tests/conftest.py) não impeça o módulo de ser importado.
+# O erro real só aparece quando o LLM é efetivamente invocado.
+try:
+    llm = ChatOpenAI(
+        model=llm_model,
+        api_key=api_key,
+        base_url="https://api.deepseek.com/v1", # Garanta que a base URL aponta para a API do DeepSeek
+        temperature=0,
+        extra_body={
+            "thinking": {
+                 "type": "disabled"
+            }
         }
-    }
-)
+    )
+except Exception as e:
+    print(f"⚠️ Alerta: Erro ao inicializar LLM (ChatOpenAI): {e}")
+    llm = None
 
 static_tools = [
     consultar_horarios_disponiveis, 

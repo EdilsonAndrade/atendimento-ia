@@ -53,8 +53,13 @@ def make_repository(monkeypatch, rows, count=None):
 
 def test_list_tenants_maps_rows_to_dicts(monkeypatch):
     # EDI-63: colunas monthly_message_limit/notification_emails entram entre
-    # scheduling_enabled e created_at (ver TenantRepository.list_tenants).
-    rows = [("1234", "Barbearia Central", "cal@x", ["barbeariacentral.com.br"], True, 1000, ["a@x.com"], None, None)]
+    # scheduling_enabled e oferta_vigente_texto. EDI-53: oferta_vigente_texto/
+    # validade/retention_days entram antes de created_at/updated_at (ver
+    # TenantRepository.list_tenants).
+    rows = [(
+        "1234", "Barbearia Central", "cal@x", ["barbeariacentral.com.br"], True, 1000,
+        ["a@x.com"], None, None, 30, None, None,
+    )]
     repo, _ = make_repository(monkeypatch, rows)
 
     result = repo.list_tenants(None)
@@ -68,6 +73,9 @@ def test_list_tenants_maps_rows_to_dicts(monkeypatch):
             "scheduling_enabled": True,
             "monthly_message_limit": 1000,
             "notification_emails": ["a@x.com"],
+            "oferta_vigente_texto": None,
+            "oferta_vigente_validade": None,
+            "retention_days": 30,
             "created_at": None,
             "updated_at": None,
         }
