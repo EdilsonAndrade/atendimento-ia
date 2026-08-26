@@ -58,6 +58,11 @@ class TenantService:
         """Alias for get_tenant — used by Google Calendar tools."""
         return self.get_tenant(tenant_id)
 
+    def list_tenants_with_retention(self) -> list:
+        """Tenants com `retention_days` configurado — usado pelo job de expurgo
+        de `conversation_messages` (EDI-53)."""
+        return self.tenant_repository.list_tenants_with_retention()
+
     def search_tenants(self, term: str, limit: int = 20) -> list:
         """`GET /tenants` original (EDI-43 e anteriores) — array puro, sem
         paginação nem tags. Não tocar: é consumido hoje pela busca de tenant

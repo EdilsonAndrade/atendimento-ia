@@ -15,6 +15,10 @@ from modules.tenant_limits.infrastructure.postgres_notification_claim import Pos
 from modules.tenant_limits.infrastructure.postgres_tenant_limit_config import PostgresTenantLimitConfig
 from modules.tenant_limits.infrastructure.postgres_usage_counter import PostgresUsageCounter
 from modules.tenant_limits.infrastructure.smtp_email_sender import SmtpEmailSender
+from modules.conversation_history.application.record_conversation_turn import RecordConversationTurnUseCase
+from modules.conversation_history.infrastructure.postgres_conversation_message_repository import (
+    PostgresConversationMessageRepository,
+)
 logger = logging.getLogger(__name__)
 router = APIRouter()
 from modules.token.token_verify import verificar_token
@@ -54,6 +58,10 @@ notify_usage_milestones_use_case = NotifyUsageMilestonesUseCase(
     PostgresGlobalRecipients(),
     SmtpEmailSender(),
 )
+
+# EDI-53: histórico consultável — grava o turno (mensagem do cliente + resposta do
+# atendente) em conversation_messages, em paralelo ao checkpoint do LangGraph.
+record_conversation_turn_use_case = RecordConversationTurnUseCase(PostgresConversationMessageRepository())
 
 
 
@@ -151,6 +159,17 @@ async def chat_interaction(
 
             resposta_final = result["messages"][-1].content
             _chat_last_finished_at[conversation_key] = asyncio.get_running_loop().time()
+
+        # EDI-53: registra o turno em conversation_messages (histórico consultável) —
+        # nunca lança, mesmo padrão de isolamento de falha do EDI-60.
+        await asyncio.to_thread(
+            record_conversation_turn_use_case.execute,
+            tenant_id,
+            thread_id_base,
+            thread_id_grafo,
+            payload.message,
+            resposta_final,
+        )
 
         # EDI-63: avisos de 50/80/100% do limite mensal — depois do invoke bem
         # sucedido, nunca bloqueia nem atrasa perceptivelmente a resposta (a
