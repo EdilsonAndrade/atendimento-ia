@@ -98,21 +98,35 @@ def _get_session_messages(active_thread_id: str) -> list:
         return tup.checkpoint.get("channel_values", {}).get("messages", []) or []
 
 
-def _summarize_session(messages: list) -> dict:
-    """Chama o LLM já configurado do projeto para gerar um resumo curto + fatos
-    estruturados da sessão. Nunca inventa campo que não puder ser identificado na
-    conversa (FR-011) — o próprio prompt instrui o modelo a usar null nesse caso.
+def _extract_tenant_id(base_thread_id: str) -> str:
+    """`base_thread_id` é sempre `f"{tenant_id}:{sessao}"` (app/api/v1/endpoints/chat.py,
+    modules/webhook/whatsapp.py) — extrai o tenant_id sem depender de um parâmetro novo
+    em `resolve_active_thread_id` (que hoje só recebe o thread_id composto)."""
+    return base_thread_id.split(":", 1)[0] if base_thread_id else base_thread_id
+
+
+def _summarize_session(
+    messages: list,
+    tenant_id: str,
+    base_thread_id: str,
+    active_thread_id: str,
+    oferta_vigente_texto: str | None = None,
+    oferta_vigente_validade=None,
+) -> dict:
+    """Monta o texto da conversa e delega a classificação (resumo + fatos + outcome +
+    follow_up_draft, EDI-53) para `ClassifySessionOutcomeUseCase` — uma ÚNICA chamada
+    de LLM que substitui a antiga chamada só-de-resumo (ver
+    specs/011-conversation-history-followup/research.md §1). Nunca inventa campo que
+    não puder ser identificado na conversa (FR-011) — o próprio prompt instrui o
+    modelo a usar null nesse caso.
 
     EDI-61: o texto do 'Atendente' (mensagens ai) é gerado por um LLM e pode alegar uma
     confirmação/cancelamento de agendamento que nunca aconteceu de fato (o "agendamento
     fantasma" do incidente original). Por isso as ToolMessage do histórico — o único
     resultado real de uma ação de calendário — também entram no texto analisado, como
     linhas separadas e explicitamente marcadas como a única fonte confiável sobre o que
-    de fato ocorreu, para o campo `resultado` nunca ser preenchido com base só na palavra
-    do Atendente."""
-    from langchain_core.messages import HumanMessage, SystemMessage
-    from modules.ia.agent_graph import llm
-
+    de fato ocorreu, para o campo `resultado`/`outcome='fechado'` nunca ser preenchido
+    com base só na palavra do Atendente."""
     linhas_conversa = []
     for m in messages:
         tipo = getattr(m, "type", None)
@@ -130,28 +144,20 @@ def _summarize_session(messages: list) -> dict:
     if not conversa_texto.strip():
         return {"resumo": "", "fatos": {}}
 
-    prompt = SystemMessage(content=(
-        "Resuma a conversa de atendimento abaixo em até 3 frases curtas (~200 tokens no total). "
-        "Depois, extraia em JSON os campos: nome, interesse, objecao, resultado. "
-        "Use null para qualquer campo que não puder ser identificado com base real na conversa — "
-        "NUNCA invente ou suponha um valor.\n\n"
-        "REGRA CRÍTICA SOBRE O CAMPO 'resultado': as linhas do 'Atendente' são texto gerado por um "
-        "modelo de linguagem e PODEM alegar uma confirmação/cancelamento de agendamento que nunca "
-        "aconteceu de verdade. As linhas 'Resultado real de ferramenta' são a ÚNICA fonte confiável "
-        "sobre o que de fato aconteceu no calendário. Só preencha 'resultado' com um agendamento "
-        "confirmado/cancelado se houver uma linha 'Resultado real de ferramenta' correspondente que "
-        "comprove isso. Se o Atendente alegou uma confirmação mas não há nenhuma linha de 'Resultado "
-        "real de ferramenta' comprovando, use null para 'resultado' — NUNCA confie apenas na palavra "
-        "do Atendente para esse campo.\n\n"
-        "Responda ESTRITAMENTE em JSON, no formato: "
-        '{"resumo": "...", "fatos": {"nome": null, "interesse": null, "objecao": null, "resultado": null}}'
-    ))
-    resposta = llm.invoke([prompt, HumanMessage(content=conversa_texto)])
-    dados = json.loads(resposta.content)
-    return {
-        "resumo": str(dados.get("resumo") or ""),
-        "fatos": dados.get("fatos") or {},
-    }
+    from modules.follow_up.application.classify_session_outcome import ClassifySessionOutcomeUseCase
+    from modules.follow_up.infrastructure.llm_session_outcome_classifier import LlmSessionOutcomeClassifier
+    from modules.follow_up.infrastructure.postgres_follow_up_queue_repository import (
+        PostgresFollowUpQueueRepository,
+    )
+
+    use_case = ClassifySessionOutcomeUseCase(PostgresFollowUpQueueRepository(), LlmSessionOutcomeClassifier())
+    resultado = use_case.execute(
+        tenant_id, base_thread_id, active_thread_id, conversa_texto,
+        oferta_vigente_texto, oferta_vigente_validade,
+    )
+    if resultado is None:
+        return {"resumo": "", "fatos": {}}
+    return resultado
 
 
 def generate_and_store_session_summary(base_thread_id: str, expired_active_thread_id: str) -> None:
@@ -164,7 +170,30 @@ def generate_and_store_session_summary(base_thread_id: str, expired_active_threa
         if not messages:
             return
 
-        resultado = _summarize_session(messages)
+        tenant_id = _extract_tenant_id(base_thread_id)
+
+        # EDI-53: liga a oferta comercial real do tenant no guardrail do rascunho de
+        # follow-up (US3) — falha ao buscar o tenant não deve impedir o resumo/outcome
+        # de serem gerados, só faz o draft nascer sem nenhuma oferta citável.
+        oferta_vigente_texto = None
+        oferta_vigente_validade = None
+        try:
+            from modules.tenant.tenant_service import TenantService
+
+            tenant = TenantService().get_tenant_by_id(tenant_id)
+            if tenant:
+                oferta_vigente_texto = tenant.get("oferta_vigente_texto")
+                oferta_vigente_validade = tenant.get("oferta_vigente_validade")
+        except Exception as exc:
+            logger.error(
+                "Falha ao buscar oferta_vigente do tenant %s para o rascunho de follow-up: %s",
+                tenant_id, exc, exc_info=True,
+            )
+
+        resultado = _summarize_session(
+            messages, tenant_id, base_thread_id, expired_active_thread_id,
+            oferta_vigente_texto, oferta_vigente_validade,
+        )
         if not resultado["resumo"] and not resultado["fatos"]:
             return
 

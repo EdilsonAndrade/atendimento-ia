@@ -19,10 +19,12 @@ class TenantRepository:
         # Logic to create a new tenant in the database
         create_query = """
         INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, scheduling_enabled,
-                              monthly_message_limit, notification_emails, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                              monthly_message_limit, notification_emails,
+                              oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
         RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled,
-                  monthly_message_limit, notification_emails, created_at;
+                  monthly_message_limit, notification_emails,
+                  oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at;
         """
         cursor = self.db_connection.cursor()
         cursor.execute(create_query, (
@@ -33,6 +35,9 @@ class TenantRepository:
             tenant_data.get('scheduling_enabled', True),
             tenant_data.get('monthly_message_limit'),
             tenant_data.get('notification_emails') or [],
+            tenant_data.get('oferta_vigente_texto'),
+            tenant_data.get('oferta_vigente_validade'),
+            tenant_data.get('retention_days'),
         ))
         new_tenant = cursor.fetchone()
         self._commit()
@@ -46,7 +51,10 @@ class TenantRepository:
             'scheduling_enabled': new_tenant[4],
             'monthly_message_limit': new_tenant[5],
             'notification_emails': new_tenant[6] or [],
-            'created_at': new_tenant[7]
+            'oferta_vigente_texto': new_tenant[7],
+            'oferta_vigente_validade': new_tenant[8],
+            'retention_days': new_tenant[9],
+            'created_at': new_tenant[10]
         }
 
     def create_tenant_with_prompt(self, tenant_data, prompt_id) -> dict:
@@ -69,10 +77,12 @@ class TenantRepository:
             cursor.execute(
                 """
                 INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, scheduling_enabled,
-                                      monthly_message_limit, notification_emails, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                                      monthly_message_limit, notification_emails,
+                                      oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
                 RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled,
-                          monthly_message_limit, notification_emails, created_at;
+                          monthly_message_limit, notification_emails,
+                          oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at;
                 """,
                 (
                     tenant_data['tenant_id'],
@@ -82,6 +92,9 @@ class TenantRepository:
                     tenant_data.get('scheduling_enabled', True),
                     tenant_data.get('monthly_message_limit'),
                     tenant_data.get('notification_emails') or [],
+                    tenant_data.get('oferta_vigente_texto'),
+                    tenant_data.get('oferta_vigente_validade'),
+                    tenant_data.get('retention_days'),
                 ),
             )
             new_tenant = cursor.fetchone()
@@ -112,14 +125,19 @@ class TenantRepository:
             'scheduling_enabled': new_tenant[4],
             'monthly_message_limit': new_tenant[5],
             'notification_emails': new_tenant[6] or [],
-            'created_at': new_tenant[7],
+            'oferta_vigente_texto': new_tenant[7],
+            'oferta_vigente_validade': new_tenant[8],
+            'retention_days': new_tenant[9],
+            'created_at': new_tenant[10],
         }
 
     def get_tenant(self, tenant_id) -> dict:
         # Logic to retrieve a tenant by ID from the database
         get_query = (
             "SELECT id, name, google_calendar_id, allowed_domains, scheduling_enabled, "
-            "monthly_message_limit, notification_emails, created_at FROM tenants WHERE id = %s;"
+            "monthly_message_limit, notification_emails, "
+            "oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at "
+            "FROM tenants WHERE id = %s;"
         )
         cursor = self.db_connection.cursor()
         cursor.execute(get_query, (tenant_id,))
@@ -134,7 +152,10 @@ class TenantRepository:
                 'scheduling_enabled': tenant[4],
                 'monthly_message_limit': tenant[5],
                 'notification_emails': tenant[6] or [],
-                'created_at': tenant[7]
+                'oferta_vigente_texto': tenant[7],
+                'oferta_vigente_validade': tenant[8],
+                'retention_days': tenant[9],
+                'created_at': tenant[10]
             }
         return None
 
@@ -143,10 +164,13 @@ class TenantRepository:
         update_query = """
         UPDATE tenants
         SET name = %s, google_calendar_id = %s, allowed_domains = %s, scheduling_enabled = %s,
-            monthly_message_limit = %s, notification_emails = %s, updated_at = NOW()
+            monthly_message_limit = %s, notification_emails = %s,
+            oferta_vigente_texto = %s, oferta_vigente_validade = %s, retention_days = %s,
+            updated_at = NOW()
         WHERE id = %s
         RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled,
-                  monthly_message_limit, notification_emails, created_at, updated_at;
+                  monthly_message_limit, notification_emails,
+                  oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at, updated_at;
         """
         cursor = self.db_connection.cursor()
         cursor.execute(update_query, (
@@ -156,6 +180,9 @@ class TenantRepository:
             tenant_data.get('scheduling_enabled', True),
             tenant_data.get('monthly_message_limit'),
             tenant_data.get('notification_emails') or [],
+            tenant_data.get('oferta_vigente_texto'),
+            tenant_data.get('oferta_vigente_validade'),
+            tenant_data.get('retention_days'),
             tenant_id,
         ))
         updated_tenant = cursor.fetchone()
@@ -170,8 +197,11 @@ class TenantRepository:
                 'scheduling_enabled': updated_tenant[4],
                 'monthly_message_limit': updated_tenant[5],
                 'notification_emails': updated_tenant[6] or [],
-                'created_at': updated_tenant[7],
-                'updated_at': updated_tenant[8]
+                'oferta_vigente_texto': updated_tenant[7],
+                'oferta_vigente_validade': updated_tenant[8],
+                'retention_days': updated_tenant[9],
+                'created_at': updated_tenant[10],
+                'updated_at': updated_tenant[11]
             }
         return None
 
@@ -180,7 +210,8 @@ class TenantRepository:
         nome); com `term`, filtra por match parcial case-insensitive em id/name."""
         columns = (
             "id, name, google_calendar_id, allowed_domains, scheduling_enabled, "
-            "monthly_message_limit, notification_emails, created_at, updated_at"
+            "monthly_message_limit, notification_emails, "
+            "oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at, updated_at"
         )
         if term:
             query = f"""
@@ -214,11 +245,24 @@ class TenantRepository:
                 'scheduling_enabled': row[4],
                 'monthly_message_limit': row[5],
                 'notification_emails': row[6] or [],
-                'created_at': row[7],
-                'updated_at': row[8],
+                'oferta_vigente_texto': row[7],
+                'oferta_vigente_validade': row[8],
+                'retention_days': row[9],
+                'created_at': row[10],
+                'updated_at': row[11],
             }
             for row in rows
         ]
+
+    def list_tenants_with_retention(self) -> list[dict]:
+        """Consulta enxuta (sem JOIN de prompts/guardrails, ao contrário de
+        `list_tenants`) para o job de expurgo de `conversation_messages` (EDI-53) —
+        só os tenants que de fato têm `retention_days` configurado."""
+        cursor = self.db_connection.cursor()
+        cursor.execute("SELECT id, retention_days FROM tenants WHERE retention_days IS NOT NULL;")
+        rows = cursor.fetchall()
+        cursor.close()
+        return [{"id": row[0], "retention_days": row[1]} for row in rows]
 
     def count_tenants(self, term: str | None) -> int:
         cursor = self.db_connection.cursor()
