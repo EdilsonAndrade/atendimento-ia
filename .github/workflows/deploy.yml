@@ -71,5 +71,8 @@ jobs:
             cd /home/ubuntu/interasisai/
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             docker compose pull chatatendimento-api
-            docker compose up -d chatatendimento-api
+            # --force-recreate: garante que o container suba com o .env atual
+            # (chaves cadastradas manualmente na VM), sem depender do Compose
+            # detectar sozinho que o env_file mudou.
+            docker compose up -d --force-recreate chatatendimento-api
             docker image prune -f
