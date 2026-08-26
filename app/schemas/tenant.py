@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from datetime import datetime
+from datetime import date, datetime
 class TenantRequest(BaseModel):
     tenant_id: str = Field(..., description="O ID do cliente que solicita a criação do tenant.")
     tenant_name: str = Field(..., description="O nome do cliente que solicita a criação do tenant.")
@@ -44,6 +44,19 @@ class TenantCreate(BaseModel):
         default_factory=list,
         description="E-mails do tenant que recebem os avisos de 50/80/100%/reset do limite mensal.",
     )
+    # EDI-53: oferta comercial vigente do tenant — única fonte permitida para o
+    # rascunho de follow-up citar desconto/condição comercial (guardrail
+    # anti-alucinação). Vigente só quando os dois campos estão preenchidos E
+    # oferta_vigente_validade >= hoje.
+    oferta_vigente_texto: str | None = Field(
+        None, description="Texto livre da oferta/condição comercial vigente do tenant."
+    )
+    oferta_vigente_validade: date | None = Field(
+        None, description="Data até quando a oferta vale. NULL = sem oferta vigente."
+    )
+    retention_days: int | None = Field(
+        None, description="Dias de retenção de conversation_messages. NULL = sem expurgo automático."
+    )
 
 class TenantUpdate(BaseModel):
     name: str = Field(..., description="O nome do tenant.")
@@ -60,6 +73,15 @@ class TenantUpdate(BaseModel):
         default_factory=list,
         description="E-mails do tenant que recebem os avisos de 50/80/100%/reset do limite mensal.",
     )
+    oferta_vigente_texto: str | None = Field(
+        None, description="Texto livre da oferta/condição comercial vigente do tenant."
+    )
+    oferta_vigente_validade: date | None = Field(
+        None, description="Data até quando a oferta vale. NULL = sem oferta vigente."
+    )
+    retention_days: int | None = Field(
+        None, description="Dias de retenção de conversation_messages. NULL = sem expurgo automático."
+    )
 
 class TenantResponse(BaseModel):
     id: str = Field(..., description="O ID do tenant.")
@@ -74,6 +96,15 @@ class TenantResponse(BaseModel):
     notification_emails: list[str] = Field(
         default_factory=list,
         description="E-mails do tenant que recebem os avisos de 50/80/100%/reset do limite mensal.",
+    )
+    oferta_vigente_texto: str | None = Field(
+        None, description="Texto livre da oferta/condição comercial vigente do tenant."
+    )
+    oferta_vigente_validade: date | None = Field(
+        None, description="Data até quando a oferta vale. NULL = sem oferta vigente."
+    )
+    retention_days: int | None = Field(
+        None, description="Dias de retenção de conversation_messages. NULL = sem expurgo automático."
     )
 
 

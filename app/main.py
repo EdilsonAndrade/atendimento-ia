@@ -18,6 +18,11 @@ from app.api.v1.endpoints.tenant import router as tenant_router
 from app.api.v1.endpoints.global_notification_recipients import router as global_notification_recipients_router
 from app.api.v1.endpoints.prompt_manager import router as prompt_manager_router
 from app.api.v1.endpoints.knowledge_base import router as knowledge_base_router
+from app.api.v1.endpoints.conversation_history import router as conversation_history_router
+from app.api.v1.endpoints.follow_up_queue import (
+    global_router as follow_up_queue_global_router,
+    router as follow_up_queue_router,
+)
 from fastapi import FastAPI, Depends
 from slowapi import _rate_limit_exceeded_handler
 # get_remote_address: Função que pega o IP real do usuário (ignorando proxies se configurado certo).
@@ -115,6 +120,21 @@ app.include_router(
     global_notification_recipients_router,
     prefix="/api/v1",
     tags=["Global Notification Recipients"]
+)
+app.include_router(
+    conversation_history_router,
+    prefix="/api/v1",
+    tags=["Conversation History"]
+)
+app.include_router(
+    follow_up_queue_router,
+    prefix="/api/v1",
+    tags=["Follow-up Queue"]
+)
+app.include_router(
+    follow_up_queue_global_router,
+    prefix="/api/v1",
+    tags=["Follow-up Queue"]
 )
 app.include_router(
     prompt_manager_router,

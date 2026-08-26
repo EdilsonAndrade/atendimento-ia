@@ -14,6 +14,10 @@ from modules.tenant_limits.infrastructure.postgres_notification_claim import Pos
 from modules.tenant_limits.infrastructure.postgres_tenant_limit_config import PostgresTenantLimitConfig
 from modules.tenant_limits.infrastructure.postgres_usage_counter import PostgresUsageCounter
 from modules.tenant_limits.infrastructure.smtp_email_sender import SmtpEmailSender
+from modules.conversation_history.application.record_conversation_turn import RecordConversationTurnUseCase
+from modules.conversation_history.infrastructure.postgres_conversation_message_repository import (
+    PostgresConversationMessageRepository,
+)
 from dotenv import load_dotenv
 load_dotenv()  # Carrega variáveis de ambiente do arquivo .env
 logger = logging.getLogger("whatsapp_webhook")
@@ -48,6 +52,10 @@ notify_usage_milestones_use_case = NotifyUsageMilestonesUseCase(
     PostgresGlobalRecipients(),
     SmtpEmailSender(),
 )
+
+# EDI-53: histórico consultável — grava o turno (mensagem do cliente + resposta do
+# atendente) em conversation_messages, em paralelo ao checkpoint do LangGraph.
+record_conversation_turn_use_case = RecordConversationTurnUseCase(PostgresConversationMessageRepository())
 
 
 def _invoke_graph(estado_inicial, configuracao_requisicao):
@@ -218,6 +226,17 @@ async def processar_mensagem_e_responder(
             # Se o Grafo executou com sucesso, extrai o texto da resposta
             if result and "messages" in result and result["messages"]:
                 resposta_final = result["messages"][-1].content
+
+                # EDI-53: registra o turno em conversation_messages (histórico
+                # consultável) — nunca lança, mesmo padrão de isolamento do EDI-60.
+                await asyncio.to_thread(
+                    record_conversation_turn_use_case.execute,
+                    tenant_id,
+                    thread_id_base,
+                    thread_id_grafo,
+                    user_message,
+                    resposta_final,
+                )
 
             # EDI-63: avisos de 50/80/100% do limite mensal — nunca lança nem
             # atrasa perceptivelmente a resposta.
