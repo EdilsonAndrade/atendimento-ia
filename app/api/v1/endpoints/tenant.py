@@ -34,7 +34,7 @@ def get_usage_counter() -> PostgresUsageCounter:
 
 @router.get("", response_model=list[TenantResponse], summary="Buscar tenants por nome ou id")
 def search_tenants(
-    q: str = Query(..., min_length=1, description="Termo de busca — casado parcialmente contra id/name"),
+    q: str | None = Query(None, min_length=1, description="Termo de busca — casado parcialmente contra id/name. Omitido, lista todos."),
     limit: int = Query(20, ge=1, le=100),
     tenant_service: TenantService = Depends(),
 ):
