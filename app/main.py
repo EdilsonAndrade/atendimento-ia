@@ -1,6 +1,7 @@
 # Ponto de Entrada que inicializa a aplicação FastAPI e registra os endpoints da versão 1 (v1) da API.
 # main.py
 import asyncio
+import logging
 import uvicorn
 import os
 # jwt: A biblioteca PyJWT que vai criar (encode) e ler (decode) os nossos tokens criptografados.
@@ -44,6 +45,10 @@ from prompts.load_prompt import (
 # COMENTÁRIO: Carrega as variáveis declaradas no arquivo .env
 load_dotenv()
 
+# Sem isso, logger.info/error via logging.getLogger ficam mudos (root logger
+# sem handler cai no nível WARNING por padrão) — mesmo ajuste já feito nos
+# workers (ver workers/token_usage_retry_worker.py e workers/conversation_history_purge.py).
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
