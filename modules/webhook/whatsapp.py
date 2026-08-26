@@ -7,6 +7,13 @@ import httpx
 from infrastructure.connection import DB_URI, get_db_connection
 from modules.ia.agent_graph import get_compiled_graph
 from modules.ia.thread_session import resolve_active_thread_id
+from modules.tenant_limits.application.check_tenant_limit import CheckTenantLimitUseCase
+from modules.tenant_limits.application.notify_usage_milestones import NotifyUsageMilestonesUseCase
+from modules.tenant_limits.infrastructure.postgres_global_recipients import PostgresGlobalRecipients
+from modules.tenant_limits.infrastructure.postgres_notification_claim import PostgresNotificationClaim
+from modules.tenant_limits.infrastructure.postgres_tenant_limit_config import PostgresTenantLimitConfig
+from modules.tenant_limits.infrastructure.postgres_usage_counter import PostgresUsageCounter
+from modules.tenant_limits.infrastructure.smtp_email_sender import SmtpEmailSender
 from dotenv import load_dotenv
 load_dotenv()  # Carrega variáveis de ambiente do arquivo .env
 logger = logging.getLogger("whatsapp_webhook")
@@ -28,6 +35,19 @@ try:
 except Exception as e:
     print(f"⚠️ Alerta: Erro ao inicializar o grafo com PostgresSaver: {e}")
     graph_app = None
+
+# EDI-63: limite mensal de mensagens por tenant — checagem ANTES do invoke() (zero
+# chamadas de LLM numa mensagem bloqueada) e notificação de marco DEPOIS.
+_tenant_limit_config = PostgresTenantLimitConfig()
+_usage_counter = PostgresUsageCounter()
+check_tenant_limit_use_case = CheckTenantLimitUseCase(_tenant_limit_config, _usage_counter)
+notify_usage_milestones_use_case = NotifyUsageMilestonesUseCase(
+    _tenant_limit_config,
+    _usage_counter,
+    PostgresNotificationClaim(),
+    PostgresGlobalRecipients(),
+    SmtpEmailSender(),
+)
 
 
 def _invoke_graph(estado_inicial, configuracao_requisicao):
@@ -140,6 +160,13 @@ async def processar_mensagem_e_responder(
     conversation_lock = _get_conversation_lock(conversation_key)
     resposta_final = ""
 
+    # EDI-63: checa o limite mensal ANTES de qualquer coisa (nem o "digitando..."
+    # chega a aparecer) — uma mensagem bloqueada não gera nenhuma chamada de LLM
+    # nem resposta ao cliente final.
+    bloqueado_por_limite = await asyncio.to_thread(check_tenant_limit_use_case.execute, tenant_id, conversation_key)
+    if bloqueado_por_limite:
+        return
+
     async with conversation_lock:
         now = asyncio.get_running_loop().time()
         last_finished_at = _conversation_last_finished_at.get(conversation_key)
@@ -191,6 +218,10 @@ async def processar_mensagem_e_responder(
             # Se o Grafo executou com sucesso, extrai o texto da resposta
             if result and "messages" in result and result["messages"]:
                 resposta_final = result["messages"][-1].content
+
+            # EDI-63: avisos de 50/80/100% do limite mensal — nunca lança nem
+            # atrasa perceptivelmente a resposta.
+            await asyncio.to_thread(notify_usage_milestones_use_case.execute, tenant_id)
 
         except Exception as ex:
             logger.error(f"[WhatsApp-WebHook] Erro no grafo do tenant {tenant_id} para {sender_phone}: {str(ex)}")

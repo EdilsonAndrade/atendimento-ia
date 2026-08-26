@@ -52,7 +52,9 @@ def make_repository(monkeypatch, rows, count=None):
 
 
 def test_list_tenants_maps_rows_to_dicts(monkeypatch):
-    rows = [("1234", "Barbearia Central", "cal@x", ["barbeariacentral.com.br"], True, None, None)]
+    # EDI-63: colunas monthly_message_limit/notification_emails entram entre
+    # scheduling_enabled e created_at (ver TenantRepository.list_tenants).
+    rows = [("1234", "Barbearia Central", "cal@x", ["barbeariacentral.com.br"], True, 1000, ["a@x.com"], None, None)]
     repo, _ = make_repository(monkeypatch, rows)
 
     result = repo.list_tenants(None)
@@ -64,6 +66,8 @@ def test_list_tenants_maps_rows_to_dicts(monkeypatch):
             "google_calendar_id": "cal@x",
             "allowed_domains": ["barbeariacentral.com.br"],
             "scheduling_enabled": True,
+            "monthly_message_limit": 1000,
+            "notification_emails": ["a@x.com"],
             "created_at": None,
             "updated_at": None,
         }

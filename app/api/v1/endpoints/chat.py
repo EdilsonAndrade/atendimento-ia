@@ -8,6 +8,13 @@ from langchain_core.messages import HumanMessage
 from app.schemas.chat import MessageRequest, ChatResponse
 from modules.ia.agent_graph import get_compiled_graph
 from modules.ia.thread_session import resolve_active_thread_id
+from modules.tenant_limits.application.check_tenant_limit import CheckTenantLimitUseCase
+from modules.tenant_limits.application.notify_usage_milestones import NotifyUsageMilestonesUseCase
+from modules.tenant_limits.infrastructure.postgres_global_recipients import PostgresGlobalRecipients
+from modules.tenant_limits.infrastructure.postgres_notification_claim import PostgresNotificationClaim
+from modules.tenant_limits.infrastructure.postgres_tenant_limit_config import PostgresTenantLimitConfig
+from modules.tenant_limits.infrastructure.postgres_usage_counter import PostgresUsageCounter
+from modules.tenant_limits.infrastructure.smtp_email_sender import SmtpEmailSender
 logger = logging.getLogger(__name__)
 router = APIRouter()
 from modules.token.token_verify import verificar_token
@@ -34,7 +41,21 @@ try:
 except Exception as e:
     print(f"⚠️ Alerta: Erro ao inicializar o grafo com PostgresSaver: {e}")
     graph_app = None
-    
+
+# EDI-63: limite mensal de mensagens por tenant — checagem ANTES do invoke() (zero
+# chamadas de LLM numa mensagem bloqueada) e notificação de marco DEPOIS.
+_tenant_limit_config = PostgresTenantLimitConfig()
+_usage_counter = PostgresUsageCounter()
+check_tenant_limit_use_case = CheckTenantLimitUseCase(_tenant_limit_config, _usage_counter)
+notify_usage_milestones_use_case = NotifyUsageMilestonesUseCase(
+    _tenant_limit_config,
+    _usage_counter,
+    PostgresNotificationClaim(),
+    PostgresGlobalRecipients(),
+    SmtpEmailSender(),
+)
+
+
 
 def _invoke_graph(graph_app, estado_inicial, configuracao_requisicao):
     if graph_app is None:
@@ -99,7 +120,15 @@ async def chat_interaction(
             "base_thread_id": thread_id_base
         }
     }
-    
+
+    # EDI-63: checa o limite mensal ANTES de invocar o grafo — uma mensagem
+    # bloqueada não gera nenhuma chamada de LLM nem resposta ao cliente final.
+    bloqueado_por_limite = await asyncio.to_thread(
+        check_tenant_limit_use_case.execute, tenant_id, thread_id_grafo
+    )
+    if bloqueado_por_limite:
+        return ChatResponse(tenant_id=tenant_id, status="success", response="")
+
     try:
         # O lock é por conversa e não por tenant: clientes diferentes do mesmo tenant
         # podem processar mensagens em paralelo sem bloquear um ao outro.
@@ -122,6 +151,13 @@ async def chat_interaction(
 
             resposta_final = result["messages"][-1].content
             _chat_last_finished_at[conversation_key] = asyncio.get_running_loop().time()
+
+        # EDI-63: avisos de 50/80/100% do limite mensal — depois do invoke bem
+        # sucedido, nunca bloqueia nem atrasa perceptivelmente a resposta (a
+        # própria use case nunca lança).
+        logger.info(f"[EDI-63] Disparando notificação de uso para tenant_id={tenant_id}")
+        await asyncio.to_thread(notify_usage_milestones_use_case.execute, tenant_id)
+        logger.info(f"[EDI-63] Notificação completada para tenant_id={tenant_id}")
 
         return ChatResponse(
             tenant_id=tenant_id,

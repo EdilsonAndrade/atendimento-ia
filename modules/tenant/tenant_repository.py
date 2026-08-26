@@ -18,9 +18,11 @@ class TenantRepository:
     def create_tenant(self, tenant_data) -> dict:
         # Logic to create a new tenant in the database
         create_query = """
-        INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at)
-        VALUES (%s, %s, %s, %s, %s, NOW())
-        RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at;
+        INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, scheduling_enabled,
+                              monthly_message_limit, notification_emails, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+        RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled,
+                  monthly_message_limit, notification_emails, created_at;
         """
         cursor = self.db_connection.cursor()
         cursor.execute(create_query, (
@@ -29,6 +31,8 @@ class TenantRepository:
             tenant_data['google_calendar_id'],
             tenant_data['allowed_domains'],
             tenant_data.get('scheduling_enabled', True),
+            tenant_data.get('monthly_message_limit'),
+            tenant_data.get('notification_emails') or [],
         ))
         new_tenant = cursor.fetchone()
         self._commit()
@@ -40,7 +44,9 @@ class TenantRepository:
             'google_calendar_id': new_tenant[2],
             'allowed_domains': new_tenant[3],
             'scheduling_enabled': new_tenant[4],
-            'created_at': new_tenant[5]
+            'monthly_message_limit': new_tenant[5],
+            'notification_emails': new_tenant[6] or [],
+            'created_at': new_tenant[7]
         }
 
     def create_tenant_with_prompt(self, tenant_data, prompt_id) -> dict:
@@ -62,9 +68,11 @@ class TenantRepository:
         try:
             cursor.execute(
                 """
-                INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
-                RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at;
+                INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, scheduling_enabled,
+                                      monthly_message_limit, notification_emails, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled,
+                          monthly_message_limit, notification_emails, created_at;
                 """,
                 (
                     tenant_data['tenant_id'],
@@ -72,6 +80,8 @@ class TenantRepository:
                     tenant_data['google_calendar_id'],
                     tenant_data['allowed_domains'],
                     tenant_data.get('scheduling_enabled', True),
+                    tenant_data.get('monthly_message_limit'),
+                    tenant_data.get('notification_emails') or [],
                 ),
             )
             new_tenant = cursor.fetchone()
@@ -100,12 +110,17 @@ class TenantRepository:
             'google_calendar_id': new_tenant[2],
             'allowed_domains': new_tenant[3],
             'scheduling_enabled': new_tenant[4],
-            'created_at': new_tenant[5],
+            'monthly_message_limit': new_tenant[5],
+            'notification_emails': new_tenant[6] or [],
+            'created_at': new_tenant[7],
         }
 
     def get_tenant(self, tenant_id) -> dict:
         # Logic to retrieve a tenant by ID from the database
-        get_query = "SELECT id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at FROM tenants WHERE id = %s;"
+        get_query = (
+            "SELECT id, name, google_calendar_id, allowed_domains, scheduling_enabled, "
+            "monthly_message_limit, notification_emails, created_at FROM tenants WHERE id = %s;"
+        )
         cursor = self.db_connection.cursor()
         cursor.execute(get_query, (tenant_id,))
         tenant = cursor.fetchone()
@@ -117,7 +132,9 @@ class TenantRepository:
                 'google_calendar_id': tenant[2],
                 'allowed_domains': tenant[3],
                 'scheduling_enabled': tenant[4],
-                'created_at': tenant[5]
+                'monthly_message_limit': tenant[5],
+                'notification_emails': tenant[6] or [],
+                'created_at': tenant[7]
             }
         return None
 
@@ -125,9 +142,11 @@ class TenantRepository:
         # Logic to update an existing tenant in the database
         update_query = """
         UPDATE tenants
-        SET name = %s, google_calendar_id = %s, allowed_domains = %s, scheduling_enabled = %s, updated_at = NOW()
+        SET name = %s, google_calendar_id = %s, allowed_domains = %s, scheduling_enabled = %s,
+            monthly_message_limit = %s, notification_emails = %s, updated_at = NOW()
         WHERE id = %s
-        RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at, updated_at;
+        RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled,
+                  monthly_message_limit, notification_emails, created_at, updated_at;
         """
         cursor = self.db_connection.cursor()
         cursor.execute(update_query, (
@@ -135,6 +154,8 @@ class TenantRepository:
             tenant_data['google_calendar_id'],
             tenant_data['allowed_domains'],
             tenant_data.get('scheduling_enabled', True),
+            tenant_data.get('monthly_message_limit'),
+            tenant_data.get('notification_emails') or [],
             tenant_id,
         ))
         updated_tenant = cursor.fetchone()
@@ -147,17 +168,23 @@ class TenantRepository:
                 'google_calendar_id': updated_tenant[2],
                 'allowed_domains': updated_tenant[3],
                 'scheduling_enabled': updated_tenant[4],
-                'created_at': updated_tenant[5],
-                'updated_at': updated_tenant[6]
+                'monthly_message_limit': updated_tenant[5],
+                'notification_emails': updated_tenant[6] or [],
+                'created_at': updated_tenant[7],
+                'updated_at': updated_tenant[8]
             }
         return None
 
     def list_tenants(self, term: str | None, limit: int = 20, offset: int = 0) -> list:
         """Lista tenants paginada. Sem `term`, devolve todos (ordenado por
         nome); com `term`, filtra por match parcial case-insensitive em id/name."""
+        columns = (
+            "id, name, google_calendar_id, allowed_domains, scheduling_enabled, "
+            "monthly_message_limit, notification_emails, created_at, updated_at"
+        )
         if term:
-            query = """
-            SELECT id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at, updated_at
+            query = f"""
+            SELECT {columns}
             FROM tenants
             WHERE id ILIKE %s OR name ILIKE %s
             ORDER BY name
@@ -166,8 +193,8 @@ class TenantRepository:
             pattern = f"%{term}%"
             params = (pattern, pattern, limit, offset)
         else:
-            query = """
-            SELECT id, name, google_calendar_id, allowed_domains, scheduling_enabled, created_at, updated_at
+            query = f"""
+            SELECT {columns}
             FROM tenants
             ORDER BY name
             LIMIT %s OFFSET %s;
@@ -185,8 +212,10 @@ class TenantRepository:
                 'google_calendar_id': row[2],
                 'allowed_domains': row[3],
                 'scheduling_enabled': row[4],
-                'created_at': row[5],
-                'updated_at': row[6],
+                'monthly_message_limit': row[5],
+                'notification_emails': row[6] or [],
+                'created_at': row[7],
+                'updated_at': row[8],
             }
             for row in rows
         ]

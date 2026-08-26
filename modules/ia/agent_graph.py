@@ -29,6 +29,7 @@ from util.ai_helpers import sanitize_for_openai_strict_format  # COMENTÁRIO: Im
 from modules.ia.thread_session import get_latest_session_summary, build_session_summary_context_block
 from modules.token_usage.application.record_token_usage import RecordTokenUsageUseCase
 from modules.token_usage.infrastructure.postgres_token_usage_repository import PostgresTokenUsageRepository
+from modules.token_usage.infrastructure.redis_retry_queue import RedisStreamRetryQueue
 from langchain_core.messages import trim_messages
 from util.ai_helpers import (
     extract_customer_profile,
@@ -296,7 +297,20 @@ def _intencao_anterior_nao_chitchat(messages) -> str | None:
 # ============================================================================
 # RASTREAMENTO DE CUSTO DE TOKEN POR CHAMADA AO LLM (EDI-60)
 # ============================================================================
-_token_usage_use_case = RecordTokenUsageUseCase(PostgresTokenUsageRepository())
+# EDI-63: se o INSERT direto em chat_token_usage falhar, o registro vai para uma
+# fila de retry (Redis Streams) em vez de só ser perdido — ver
+# modules/token_usage/infrastructure/redis_retry_queue.py e retry_worker.py.
+# A conexão Redis é lazy (redis-py só conecta na primeira chamada), então não há
+# custo/risco de indisponibilidade aqui na inicialização do módulo.
+try:
+    _token_usage_retry_queue = RedisStreamRetryQueue()
+except Exception as e:
+    print(f"⚠️ Alerta: Erro ao inicializar RedisStreamRetryQueue: {e}")
+    _token_usage_retry_queue = None
+
+_token_usage_use_case = RecordTokenUsageUseCase(
+    PostgresTokenUsageRepository(), retry_queue=_token_usage_retry_queue
+)
 
 
 def record_llm_usage(response, config: RunnableConfig, node_type: str) -> None:

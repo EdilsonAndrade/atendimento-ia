@@ -54,5 +54,10 @@ google-auth-httplib2
 PyJWT
 slowapi
 
+# Fila de retry de uso de token (EDI-63)
+redis
+# EmailStr (validação de notification_emails/global_notification_recipients, EDI-63)
+email-validator
+
 # Testes
 pytest>=8.0.0

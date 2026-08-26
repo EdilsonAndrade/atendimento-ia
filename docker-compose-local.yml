@@ -83,6 +83,23 @@ services:
     networks:
       - proxy_default
 
+  # COMENTÁRIO (EDI-63): worker que drena a fila de retry de chat_token_usage
+  # (Redis Streams, reaproveita o evolution_redis acima via REDIS_URL=redis://evolution_redis:6379/2)
+  # — não obrigatório para dev local (rode manualmente com
+  # `python -m workers.token_usage_retry_worker`), mas em produção precisa de um
+  # processo/serviço próprio. Descomentar quando for para produção:
+  # token-usage-retry-worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   command: ["python", "-m", "workers.token_usage_retry_worker"]
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     - evolution_redis
+  #   networks:
+  #     - proxy_default
+
 networks:
   proxy_default:
     name: simplificandoai_default # Garanta que bate com o nome exato da rede do Nginx Proxy Manager

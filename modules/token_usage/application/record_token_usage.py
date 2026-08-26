@@ -9,7 +9,7 @@ import os
 from decimal import Decimal
 from typing import Any
 
-from modules.token_usage.application.ports import TokenUsageRepository
+from modules.token_usage.application.ports import RetryQueuePort, TokenUsageRepository
 from modules.token_usage.domain.token_usage_record import TokenUsageRecord, calculate_cost_usd
 
 logger = logging.getLogger(__name__)
@@ -21,8 +21,12 @@ class RecordTokenUsageUseCase:
         repository: TokenUsageRepository,
         price_per_1k_input: Decimal | None = None,
         price_per_1k_output: Decimal | None = None,
+        retry_queue: RetryQueuePort | None = None,
     ):
         self._repository = repository
+        # EDI-63: quando o INSERT direto falhar, o registro vai para esta fila em
+        # vez de só ser perdido — ver modules/token_usage/infrastructure/redis_retry_queue.py.
+        self._retry_queue = retry_queue
         # Preço configurável via env var — não há tabela de preços oficial embutida
         # neste projeto (varia por provedor/plano); ver research.md §5.
         self._price_per_1k_input = price_per_1k_input if price_per_1k_input is not None else Decimal(
@@ -63,7 +67,18 @@ class RecordTokenUsageUseCase:
                     input_tokens, output_tokens, self._price_per_1k_input, self._price_per_1k_output
                 ),
             )
-            self._repository.save(record)
+            try:
+                self._repository.save(record)
+            except Exception as exc:
+                logger.error(
+                    "Falha ao registrar uso de token (tenant_id=%s, base_thread_id=%s, node_type=%s): %s",
+                    tenant_id,
+                    base_thread_id,
+                    node_type,
+                    exc,
+                    exc_info=True,
+                )
+                self._publish_to_retry_queue(record)
         except Exception as exc:
             logger.error(
                 "Falha ao registrar uso de token (tenant_id=%s, base_thread_id=%s, node_type=%s): %s",
@@ -72,4 +87,18 @@ class RecordTokenUsageUseCase:
                 node_type,
                 exc,
                 exc_info=True,
+            )
+
+    def _publish_to_retry_queue(self, record: TokenUsageRecord) -> None:
+        """Nunca lança — se até a publicação na fila de retry falhar, o registro
+        é perdido (mesmo comportamento de antes do EDI-63), mas o request-path
+        nunca é afetado (FR-006 do EDI-60)."""
+        if self._retry_queue is None:
+            return
+        try:
+            self._retry_queue.publish(record)
+        except Exception as exc:
+            logger.error(
+                "Falha ao publicar registro de uso de token na fila de retry (tenant_id=%s): %s",
+                record.tenant_id, exc, exc_info=True,
             )
