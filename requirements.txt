@@ -22,6 +22,7 @@ langchain-openai
 langchain-ollama
 langchain-chroma
 langchain-huggingface
+langchain-text-splitters
 langgraph
 langgraph-checkpoint
 langgraph-checkpoint-postgres

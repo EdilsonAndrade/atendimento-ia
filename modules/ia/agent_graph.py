@@ -499,7 +499,7 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     print(f" -> Buscando no DB por: '{pergunta_usuario}'")
     
     # 2. Busca RAG via MMR
-    contexto_encontrado = vector_manager_global.search_context(pergunta_usuario,tenant_id, 5)
+    contexto_encontrado = vector_manager_global.search_context(pergunta_usuario,tenant_id, 10)
     contexto_formatado = "\n\n".join(contexto_encontrado)
     
     # 3. Formata o histórico recente de conversas para o LLM lembrar do passado
@@ -552,7 +552,7 @@ def operational_node(state: AgentState, config: RunnableConfig):
             pergunta_usuario = msg.content
             break
 
-    contexto_encontrado = vector_manager_global.search_context(pergunta_usuario, tenant_id, 5)
+    contexto_encontrado = vector_manager_global.search_context(pergunta_usuario, tenant_id, 10)
     contexto_formatado = "\n\n".join(contexto_encontrado)
 
     # As tools são resolvidas ANTES do prompt para que BOOKING_INTEGRITY_RULE

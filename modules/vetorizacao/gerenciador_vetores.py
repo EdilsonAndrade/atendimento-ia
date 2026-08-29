@@ -3,10 +3,21 @@ import psycopg
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_postgres import PGVector
 from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from infrastructure.connection import DB_URI
 
 print("🚀 [GLOBAL] Carregando modelo HuggingFace na memória...")
 _GLOBAL_EMBEDDINGS = HuggingFaceEmbeddings(model_name="paraphrase-multilingual-MiniLM-L12-v2")
+
+# COMENTÁRIO: O modelo trunca silenciosamente qualquer texto acima do seu max_seq_length
+# na hora de gerar o embedding (sem erro, sem aviso) — por isso o split usa o tokenizer
+# real do modelo como length_function, garantindo que nenhum chunk ultrapasse essa janela.
+_MAX_SEQ_LENGTH = _GLOBAL_EMBEDDINGS._client.get_max_seq_length() or 128
+_TEXT_SPLITTER = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+    _GLOBAL_EMBEDDINGS._client.tokenizer,
+    chunk_size=_MAX_SEQ_LENGTH - 20,  # margem para os tokens especiais ([CLS]/[SEP])
+    chunk_overlap=30,
+)
 
 class GerenciadorVetores:
     def __init__(self, collection_name: str = "interasis_knowledge"):
@@ -34,17 +45,26 @@ class GerenciadorVetores:
 
     def criar_banco_com_textos(self, textos: list, tenant_id: str):
         """
-        COMENTÁRIO: Converte os textos em vetores via HuggingFace e salva no PostgreSQL,
-        injetando o tenant_id nos metadados para garantir o isolamento entre clientes.
+        COMENTÁRIO: Divide cada texto em chunks dentro da janela de tokens do modelo de
+        embedding, converte em vetores via HuggingFace e salva no PostgreSQL, injetando
+        o tenant_id nos metadados para garantir o isolamento entre clientes.
         """
-        print(f"Vetorizando e salvando {len(textos)} pedaços de texto para o tenant '{tenant_id}' no PostgreSQL...")
-        
-        # COMENTÁRIO: Transforma a lista de strings em objetos Document com o tenant_id no metadata
+        # COMENTÁRIO: Sem esse split, um texto maior que a janela do modelo (128 tokens)
+        # era truncado silenciosamente na hora do embedding — só o início virava vetor.
         documentos = [
-            Document(page_content=texto, metadata={"tenant_id": tenant_id})
-            for texto in textos
+            Document(
+                page_content=pedaco,
+                metadata={"tenant_id": tenant_id, "source_index": indice_texto, "chunk_index": indice_chunk},
+            )
+            for indice_texto, texto in enumerate(textos)
+            for indice_chunk, pedaco in enumerate(_TEXT_SPLITTER.split_text(texto))
         ]
-        
+
+        print(
+            f"Vetorizando e salvando {len(documentos)} chunks (a partir de {len(textos)} texto(s)) "
+            f"para o tenant '{tenant_id}' no PostgreSQL..."
+        )
+
         # COMENTÁRIO: Insere os documentos diretamente no banco de dados vetorial
         self.banco.add_documents(documentos)
         print("Vetores salvos com sucesso no PostgreSQL!")
