@@ -22,3 +22,12 @@ specs/012-grafana-loki-observability/plan.md
 1. WHEN you want to execute tests MUST pass the command to the user can test.
 2. Todo ticket que for criar no LIENEAR deve conter os endpoints se houver, descritos em detalhe para o front-end saber como criar as chamadas corretamente.
 <!-- SPECKIT END -->
+
+## Test Guide
+1. At the end of all implementation, describe how to test following the example
+<example>
+1- Access the page XPTO
+2- Click on menu YZ
+3- Execute the SQL query to check
+4- Run this curl to update or inser
+</example>
