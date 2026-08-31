@@ -1,1 +1,1 @@
-docker compose -f docker-compose-local.yml up -d --build interasisai-web
+docker compose -f docker-compose-local.yml up -d --build --force-recreate interasisai-web
