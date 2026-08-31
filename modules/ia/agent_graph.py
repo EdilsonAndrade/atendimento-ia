@@ -372,8 +372,8 @@ def routing_agent(state: AgentState, config: RunnableConfig):
         "(e.g., providing a barber name, time, date, service, or confirmation).\n"
         "2. 'INSTITUTIONAL': Questions about company address, policies, rules, products, services, features, or pricing/plans.\n"
         "3. 'CHITCHAT': ONLY when the ENTIRE message is small talk (greeting, farewell, "
-        "'tudo bem?', 'olá tudo bem?', thanks) with NO question about the business, products, services, pricing, or booking attached. If the message mixes small,
-        " talk with "
+        "'tudo bem?', 'olá tudo bem?', thanks) with NO question about the business, products, services, pricing, or booking attached. If the message mixes small "
+        "talk with "
         "question e.g. 'o que vocês vendem?' - "
         "classify by the real question's intent (INSTITUTIONAL or OPERATIONAL) \n\n" "CHITCHAT, WHEN ASKING tudo bem? you respond I am good how may I help you?.\n"
         "4. 'CONTINUATION': If the last message carries NO topic of its own — a conversational "
