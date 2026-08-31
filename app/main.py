@@ -19,6 +19,7 @@ from app.api.v1.endpoints.evolution_whatsapp_instances import router as evolutio
 from app.api.v1.endpoints.tenant import router as tenant_router
 from app.api.v1.endpoints.global_notification_recipients import router as global_notification_recipients_router
 from app.api.v1.endpoints.prompt_manager import router as prompt_manager_router
+from app.api.v1.endpoints.system_prompts import router as system_prompts_router
 from app.api.v1.endpoints.knowledge_base import router as knowledge_base_router
 from app.api.v1.endpoints.conversation_history import router as conversation_history_router
 from app.api.v1.endpoints.follow_up_queue import (
@@ -148,6 +149,10 @@ app.include_router(
 )
 app.include_router(
     prompt_manager_router,
+    prefix="/api/v1"
+)
+app.include_router(
+    system_prompts_router,
     prefix="/api/v1"
 )
 app.include_router(

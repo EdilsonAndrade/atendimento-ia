@@ -17,6 +17,7 @@ specs/012-grafana-loki-observability/plan.md
 4. O nome da branch sempre levará o NOME da ISSUE do Linear, se não houver, pergunte.
 5. CASO não haja ticket no linear, atuar pontualmente após entendimento
 6. Revision ID de migration do Alembic (nome do arquivo em `migrations/versions/`, sem o `.py`) DEVE ter no máximo 32 caracteres — é o limite da coluna `alembic_version.version_num`. Usar um slug curto (ex.: `0009_conversation_followup`, não `0009_conversation_history_followup`) e conferir com `len(revision_id)` antes de criar o arquivo.
+7. Não inicie o container, ou suba instancia para testar o site ou backend, sempre peça ao usuário para seguir conforme plano de Test Guide, não queria ler o navegador , exceto se solicitado
 
 ## MANDATORY
 1. WHEN you want to execute tests MUST pass the command to the user can test.
