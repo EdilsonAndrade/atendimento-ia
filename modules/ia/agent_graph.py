@@ -20,6 +20,12 @@ from prompts.load_prompt import (
     carregar_institutional_prompt,
     carregar_chitchat_prompt,
 )
+from prompts.system_prompt_loader import (
+    carregar_groundedness_rule,
+    carregar_chitchat_no_knowledge_rule,
+    carregar_booking_integrity_rule,
+    carregar_routing_agent_prompt,
+)
 from modules.agendamento.tools.google_calendario.agenda_tool import build_agendar_tool
 from modules.agendamento.tools.google_calendario.consulta_agenda_tool import build_consulta_tool
 from modules.agendamento.tools.google_calendario.delete_agenda_tool import build_delete_tool
@@ -47,74 +53,12 @@ llm_model = os.getenv("LLM", "llama3.3")
 api_key = os.getenv("API_KEY")
 print(f"Acessando o banco {DB_URI}")
 
-# Regra anti-alucinação aplicada em cima de QUALQUER prompt (institucional, ou operacional
-# vindo do banco ou do fallback local) — garante que o nome do negócio, serviços e preços
-# nunca sejam inventados, mesmo que o prompt customizado do tenant no banco não a inclua.
-GROUNDEDNESS_RULE = (
-    "GROUNDEDNESS RULE (CRITICAL): Use ONLY the information provided in the knowledge base context to answer "
-    "questions about the business name, services, prices, professionals, or history. NEVER hallucinate, invent, or assume "
-    "a business name, service, or professional that is not explicitly present in that context — including generic examples "
-    "like 'barbearia', 'André', or any other placeholder business. If the conversation history conflicts with the knowledge "
-    "base context, the knowledge base always wins — it is the current source of truth, the history may be stale.\n\n"
-    "SELF-CITATION RULE (CRITICAL): Your own previous messages in this conversation are NEVER evidence that a "
-    "tool was called or that an action happened. If you cannot see an actual tool result in the CURRENT context, "
-    "the action did not happen — even if an earlier message in the history claimed otherwise.\n"
-)
-
-# Rede de segurança do chitchat_node. Diferente dos nós institutional/operational,
-# este nó NÃO recebe contexto RAG nenhum — não há base de conhecimento no prompt.
-# Sem esta regra, quando o roteador erra e manda uma pergunta de negócio para cá,
-# o modelo não tem o que citar e inventa a empresa inteira (já aconteceu: respondeu
-# "chatbots, integrações CRM/ERP, consultoria" para um tenant que vende outra coisa).
-# A regra assume o pior caso do roteador e transforma alucinação em pedido de
-# reformulação, que é recuperável pelo usuário.
-CHITCHAT_NO_KNOWLEDGE_RULE = (
-    "SCOPE RULE (CRITICAL): You have NO knowledge base available in this turn. You therefore do "
-    "NOT know this business's products, services, plans, prices, hours, address, staff, or policies. "
-    "NEVER state, list, guess, or infer any of them — not even from your own earlier messages in this "
-    "conversation, which may themselves be wrong. If the user asks anything factual about the business, "
-    "do not answer it: briefly say you'll check that information and invite them to ask it directly "
-    "(e.g. 'Sobre isso deixa eu confirmar certinho — pode me perguntar o que gostaria de saber "
-    "dos nossos serviços?'), in the user's language. Only handle greetings, farewells and small talk.\n"
-)
-
-# Regra de integridade de agendamento, aplicada em cima do prompt operacional
-# SOMENTE quando o tenant tem agendamento habilitado (get_active_tools devolveu
-# tools de calendário). Substitui os guards antigos que inferiam por palavra
-# solta ("ocupado", "livre") na RESPOSTA do modelo — o que gerava falso positivo
-# em qualquer texto que mencionasse essas palavras fora de contexto de agenda
-# (ex.: "não tenho esse link disponível"). Aqui a política é declarativa e
-# condicionada à capacidade real do tenant, não a um casamento de substring.
-#
-# A privacidade de agenda (não revelar dono/motivo de evento de outro cliente)
-# e a regra de um agendamento por vez viviam no guardrail GLOBAL — ou seja, todo
-# tenant recebia essas regras mesmo sem nenhuma tool de agendamento habilitada
-# (ex.: o simplificandoai, que não agenda nada). Migradas para cá para que só
-# cheguem ao modelo quando existe agenda real para proteger.
-BOOKING_INTEGRITY_RULE = (
-    "BOOKING INTEGRITY RULE (CRITICAL): Never state that a time slot is busy, free, or already "
-    "booked, and never confirm that a booking was made, unless a calendar tool call has just "
-    "returned that result in this same turn. If the user asks about availability or wants to book, "
-    "call the appropriate tool before answering — never answer from memory, from the conversation "
-    "history, or from the knowledge base.\n\n"
-    "NO NARRATION RULE (CRITICAL): NEVER announce that you are about to check, consult, or verify "
-    "something ('vou verificar', 'um momento', 'deixa eu consultar a agenda', 'verificando a "
-    "disponibilidade') and then answer as if that check already happened. Either call the tool "
-    "silently in this same turn and wait for its real result, or ask the user a question — never "
-    "narrate an action you have not actually taken yet.\n\n"
-    "CALENDAR PRIVACY RULE (CRITICAL): When reading calendar data, you will see the title, name, or "
-    "description of events belonging to other clients or internal blocks. It is STRICTLY FORBIDDEN to "
-    "reveal that title, name, description, or reason to the current user — refer to any such slot "
-    "EXCLUSIVELY as \"(ocupado)\". If the user asks directly about the reason, whose event it is, or "
-    "what is scheduled during an unavailable time, reply EXACTLY with this phrase: \"Este é um horário "
-    "ocupado e, por questões de segurança e privacidade, o sistema não me fornece os detalhes internos "
-    "dessa reserva.\"\n\n"
-    "REGRA DE MÚLTIPLOS AGENDAMENTOS (CRITICAL): Se o cliente solicitar agendamentos para mais de uma "
-    "pessoa ou mais de um horário na mesma mensagem (ex: para ele, filho, esposa), NÃO chame a "
-    "ferramenta de agendamento mais de uma vez neste turno. Responda em texto explicando que o "
-    "atendimento é feito um agendamento por vez e pergunte qual é o primeiro nome/horário que o "
-    "cliente deseja agendar agora.\n"
-)
+# GROUNDEDNESS_RULE, CHITCHAT_NO_KNOWLEDGE_RULE e BOOKING_INTEGRITY_RULE eram
+# constantes hardcoded aqui. Desde o EDI-71 são administráveis pelo Painel Admin
+# (tabela `system_prompts`, endpoints `/api/v1/system-prompts`) e carregadas via
+# `prompts.system_prompt_loader`, que mantém o mesmo texto hardcoded como
+# fallback local caso o banco esteja indisponível — ver esse módulo para o
+# conteúdo e o contexto histórico de cada regra.
 
 # --- Guardrails de SAÍDA do operational_node (pós-invocação do LLM) ---------
 # Duas falhas reais já observadas em produção, ambas com a mesma causa raiz
@@ -360,46 +304,11 @@ def routing_agent(state: AgentState, config: RunnableConfig):
     # continuação (ver _intencao_anterior_nao_chitchat) e como fallback seguro.
     intencao_anterior = _intencao_anterior_nao_chitchat(state["messages"])
 
-    # Aciona o LLM passando as mensagens nativas
-    system_prompt = SystemMessage(content=(
-        "You are an orchestrator router for a business booking application.\n"
-        "Classify the intent of THE USER'S LAST MESSAGE ONLY. The earlier conversation is "
-        "provided solely to resolve pronouns and ellipsis (e.g. 'e o preço disso?'), NEVER to "
-        "decide the class. A streak of previous CHITCHAT turns is NOT evidence that the last "
-        "message is CHITCHAT — classify each message on its own merits.\n\n"
-        "CLASSIFICATION RULES:\n"
-        "1. 'OPERATIONAL': The user wants to book, reschedule, cancel, or is answering a question about a booking "
-        "(e.g., providing a barber name, time, date, service, or confirmation).\n"
-        "2. 'INSTITUTIONAL': Questions about company address, policies, rules, products, services, features, or pricing/plans.\n"
-        "3. 'CHITCHAT': ONLY when the ENTIRE message is small talk (greeting, farewell, "
-        "'tudo bem?', 'olá tudo bem?', thanks) with NO question about the business, products, services, pricing, or booking attached. If the message mixes small "
-        "talk with "
-        "question e.g. 'o que vocês vendem?' - "
-        "classify by the real question's intent (INSTITUTIONAL or OPERATIONAL) \n\n" "CHITCHAT, WHEN ASKING tudo bem? you respond I am good how may I help you?.\n"
-        "4. 'CONTINUATION': If the last message carries NO topic of its own — a conversational "
-        "repair signal ('não entendi', 'como assim?', 'hein?', 'oi?', 'quê?'), a bare "
-        "acknowledgement ('ok', 'sim', 'isso'), or a fragment only meaningful against the "
-        "previous turn — it is NOT CHITCHAT. Classify it the SAME as PREVIOUS TURN INTENT "
-        "(given below). This takes priority over rule 3.\n\n"
-        "TIE-BREAKER: CHITCHAT is the LAST RESORT. If the message could plausibly be read as a "
-        "question about the business, or as a continuation of the previous turn, choose "
-        "INSTITUTIONAL/OPERATIONAL over CHITCHAT.\n\n"
-        f"PREVIOUS TURN INTENT: {intencao_anterior or 'none (start of conversation)'}\n\n"
-        "EXAMPLES (last user message -> class):\n"
-        "'de nada, o que vcs vendem?' -> INSTITUTIONAL\n"
-        "'estou bem, obrigado, o q vcs vendem?' -> INSTITUTIONAL\n"
-        "'estes sao seus produtos?' -> INSTITUTIONAL\n"
-        "'ue achei q eram produtos de marketing' -> INSTITUTIONAL\n"
-        "'oi, quanto custa o plano?' -> INSTITUTIONAL\n"
-        "'ta bem, quais serviços vcs tem' -> INSTITUTIONAL\n"
-        "'ola' -> CHITCHAT\n"
-        "'tudo bem?' -> CHITCHAT\n"
-        "'obrigado, ate mais' -> CHITCHAT\n"
-        "'quero marcar pra amanha as 15h' -> OPERATIONAL\n"
-        "'não entendi' (PREVIOUS TURN INTENT: OPERATIONAL) -> CONTINUATION\n"
-        "'como assim?' (PREVIOUS TURN INTENT: INSTITUTIONAL) -> CONTINUATION\n\n"
-        "CRITICAL: Reply with EXACTLY ONE word: 'OPERATIONAL', 'INSTITUTIONAL', 'CHITCHAT', or "
-        "'CONTINUATION'."
+    # Aciona o LLM passando as mensagens nativas. O template (routing_agent) vem do
+    # Painel Admin via prompts.system_prompt_loader (EDI-71), com fallback local
+    # hardcoded se o banco estiver indisponível — mesmo texto que vivia aqui antes.
+    system_prompt = SystemMessage(content=carregar_routing_agent_prompt(
+        intencao_anterior or "none (start of conversation)"
     ))
 
     # 3. Para o roteador, preserva a sequência AI(tool_calls)->ToolMessage e sanitiza.
@@ -519,7 +428,7 @@ def institutional_node(state: AgentState, config: RunnableConfig):
     )
     # Reforça a regra anti-alucinação por cima do prompt carregado — necessário porque o
     # template (do banco ou local) não necessariamente a inclui, mesmo padrão do operational_node.
-    prompt_final = f"{prompt_final}\n\n{GROUNDEDNESS_RULE}"
+    prompt_final = f"{prompt_final}\n\n{carregar_groundedness_rule()}"
 
     log_llm_prompt("institutional_node", tenant_id, prompt_final)
     resposta_ia = llm.invoke(prompt_final)
@@ -570,9 +479,9 @@ def operational_node(state: AgentState, config: RunnableConfig):
     # Reforça a regra anti-alucinação por cima do prompt carregado — necessário porque
     # carregar_operacional_prompt() pode devolver um prompt customizado do tenant vindo do
     # banco, que não necessariamente inclui a GROUNDEDNESS RULE presente no fallback local.
-    system_prompt_str = f"{system_prompt_str}\n\n{GROUNDEDNESS_RULE}"
+    system_prompt_str = f"{system_prompt_str}\n\n{carregar_groundedness_rule()}"
     if all_active_tools:
-        system_prompt_str = f"{system_prompt_str}\n\n{BOOKING_INTEGRITY_RULE}"
+        system_prompt_str = f"{system_prompt_str}\n\n{carregar_booking_integrity_rule()}"
 
     # Injeta dados de contato já vistos na sessão para evitar perguntas repetidas.
     profile = extract_customer_profile(state["messages"])
@@ -724,7 +633,7 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
 
     # Mesmo padrão do institutional_node: reforça a regra por cima do prompt carregado,
     # porque o template (do banco ou local) não necessariamente a inclui.
-    system_prompt_str = f"{system_prompt_str}\n\n{CHITCHAT_NO_KNOWLEDGE_RULE}"
+    system_prompt_str = f"{system_prompt_str}\n\n{carregar_chitchat_no_knowledge_rule()}"
 
     # 2. Preserva histórico real (incluindo ToolMessages) e sanitiza sequência.
     historico_com_tools = [
