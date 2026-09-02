@@ -2,7 +2,8 @@
 import psycopg
 import os
 import re
-from typing import TypedDict, Annotated, Sequence
+from typing import TypedDict, Annotated, Sequence, Literal, Optional
+from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig  # IMPORTANTE: Para receber as configs dinâmicas do FastAPI
@@ -76,10 +77,19 @@ TOOL_CALL_MARKUP_LEAK_PATTERN = re.compile(
     r"DSML|<\｜?\|?tool[_▁]calls|<\|?tool_calls|invoke\s+name=|<function_calls>",
     re.IGNORECASE,
 )
+#
+# EDI-72: o padrão original exigia "agendamento" IMEDIATAMENTE seguido de
+# "confirmad", então "Seu agendamento FOI confirmado com sucesso!" (frase real
+# vista em produção) não batia com nada aqui e passou reto sem lastro de tool.
+# Regex nunca cobre 100% da paráfrase em PT-BR livre — ver calendar_judge_agent
+# abaixo para a defesa que não depende só deste padrão.
 BOOKING_CONFIRMATION_CLAIM_PATTERN = re.compile(
-    r"est[aá]\s+reservad|agendamento\s+confirmad|hor[aá]rio\s+(est[aá]\s+)?confirmad|"
+    r"est[aá]\s+reservad|agendamento\s+(foi\s+)?confirmad|confirmad[oa]?\s+com\s+sucesso|"
+    r"reservad[oa]?\s+com\s+sucesso|hor[aá]rio\s+(est[aá]\s+)?confirmad|"
     r"foi\s+agendad|est[aá]\s+marcad|temos\s+disponibilidade|hor[aá]rio\s+(est[aá]\s+)?livre|"
-    r"consultando\s+a\s+agenda|verificando\s+a\s+(agenda|disponibilidade)",
+    r"consultando\s+a\s+agenda|verificando\s+a\s+(agenda|disponibilidade)|"
+    r"cancelamento\s+(foi\s+)?confirmad|foi\s+cancelad[oa]?\s+com\s+sucesso|"
+    r"reagendamento\s+(foi\s+)?confirmad|foi\s+reagendad",
     re.IGNORECASE,
 )
 
@@ -149,6 +159,12 @@ class AgentState(TypedDict):
     current_date: str          # Guarda a data que o usuário quer (ex: "2026-07-10")
     selected_slot: str         # Guarda o horário escolhido (ex: "10:00")
     alternatives_suggested: list  # Lista de horários alternativos que oferecemos a ele
+
+    # EDI-72: controle do calendar_judge_agent (ver definição abaixo). Ambos são
+    # sempre reescritos pelo próprio nó a cada execução — não há reducer custom,
+    # o valor retornado pelo nó simplesmente substitui o anterior no state.
+    judge_redirect_count: int  # Quantas vezes o juiz já redirecionou para operational_node neste turno
+    judge_verdict: str         # "confirmed" | "redirect" | "blocked" — última decisão do juiz
     
 
 
@@ -615,6 +631,261 @@ def operational_node(state: AgentState, config: RunnableConfig):
     return {"messages": [resposta_ia]}
 
 # ============================================================================
+# PASSO 5.5: calendar_judge_agent (EDI-72)
+# ============================================================================
+# O guardrail de regex acima (BOOKING_CONFIRMATION_CLAIM_PATTERN) e o retry com
+# tool_choice="required" já reduzem bastante o problema, mas ambos dependem da
+# mesma heurística de texto — e regex nunca cobre 100% da paráfrase em PT-BR
+# livre (foi exatamente esse o furo do incidente real do EDI-72: "Seu
+# agendamento FOI confirmado" não batia com o padrão antigo).
+#
+# calendar_judge_agent troca a prova por "existe ToolMessage no turno" (estado
+# local, pode estar certo por acidente) por uma prova real: consulta a mesma
+# integração usada por consultar_agenda (Google Calendar) usando tenant_id +
+# telefone do cliente + período alegado como chave — nunca thread_id, que não é
+# persistido no evento (ver research.md > Decisão 1).
+JUDGE_MAX_REDIRECTS = 1  # limite de redirecionamentos por turno — evita loop se o modelo narrar fantasma de novo
+
+
+def _tipo_acao_alegada(texto: str) -> Literal["create", "cancel", "reschedule"]:
+    """Classifica heuristicamente qual ação de calendário o texto está alegando,
+    só para decidir COMO verificar (ausência vs presença do evento) — não decide
+    se o guardrail dispara, isso continua sendo _resposta_sem_lastro_de_tool."""
+    texto_lower = texto.lower()
+    if "reagend" in texto_lower:
+        return "reschedule"
+    if "cancelad" in texto_lower or "cancelamento" in texto_lower:
+        return "cancel"
+    return "create"
+
+
+class _PeriodoAlegado(BaseModel):
+    start_time: Optional[str] = Field(
+        default=None,
+        description=(
+            "Data/hora inicial ISO 8601 (YYYY-MM-DDTHH:MM:SS-03:00) do horário alegado no "
+            "texto, calculada a partir da tabela de referência de datas. null se não for "
+            "possível determinar com confiança."
+        ),
+    )
+    end_time: Optional[str] = Field(
+        default=None,
+        description=(
+            "Data/hora final ISO 8601 do horário alegado (30 minutos após o início, se a "
+            "duração não for mencionada). null se não for possível determinar com confiança."
+        ),
+    )
+
+
+def _extrair_periodo_alegado(
+    texto_resposta: str,
+    tabela_calendario_str,
+    qual: Literal["principal", "antigo", "novo"] = "principal",
+) -> tuple[Optional[str], Optional[str]]:
+    """LLM call curto e determinístico (temperature=0, saída estruturada) para
+    resolver o período ISO alegado no texto — não regex sobre linguagem natural
+    (research.md > Decisão 2). Usado tanto para criar/cancelar (um período) quanto
+    para reagendar (chamado duas vezes: uma para o horário antigo, outra para o
+    novo)."""
+    if llm is None:
+        return None, None
+
+    instrucao_extra = ""
+    if qual == "antigo":
+        instrucao_extra = (
+            "Extraia especificamente o horário ANTIGO/ORIGINAL que está sendo substituído "
+            "(não o novo horário para o qual o cliente foi reagendado)."
+        )
+    elif qual == "novo":
+        instrucao_extra = (
+            "Extraia especificamente o NOVO horário para o qual o agendamento foi movido "
+            "(não o horário antigo/original)."
+        )
+
+    prompt = (
+        "Extraia o período (data/hora de início e fim) do agendamento mencionado no texto "
+        "abaixo. Use a tabela de referência de datas para resolver termos relativos "
+        f"(amanhã, quinta-feira, etc). {instrucao_extra}\n\n"
+        f"TABELA DE REFERÊNCIA:\n{tabela_calendario_str}\n\n"
+        f"TEXTO:\n{texto_resposta}\n\n"
+        "Se não for possível determinar o horário com confiança, retorne null nos dois campos."
+    )
+
+    try:
+        extrator = llm.with_structured_output(_PeriodoAlegado)
+        resultado = extrator.invoke(prompt)
+        return resultado.start_time, resultado.end_time
+    except Exception as e:
+        print(f" -> ⚠️ [CALENDAR_JUDGE] Falha ao extrair período alegado ({qual}): {e}")
+        return None, None
+
+
+def _verificar_acao_calendario(
+    tenant_id: str,
+    customer_phone: Optional[str],
+    start_time: Optional[str],
+    end_time: Optional[str],
+    action_type: Literal["create", "cancel"],
+    thread_id: str = "unknown",
+) -> Literal["confirmed", "not_confirmed", "extraction_failed"]:
+    """Consulta a integração real (mesmo backend de consultar_agenda) e decide se
+    a ação alegada realmente ocorreu. Chave: tenant_id (calendário certo) +
+    customer_phone (via parâmetro `query`, já suportado por list_events) + período
+    — nunca thread_id, que não existe no evento do Google Calendar."""
+    if not customer_phone or not start_time or not end_time:
+        return "extraction_failed"
+    if tenant_service is None or calendar_service is None:
+        return "extraction_failed"
+
+    tenant = tenant_service.get_tenant_by_id(tenant_id)
+    google_calendar_id = tenant.get("google_calendar_id") if tenant else None
+    if not google_calendar_id:
+        return "extraction_failed"
+
+    try:
+        events = calendar_service.list_events(
+            calendar_id=google_calendar_id,
+            start_time=start_time,
+            end_time=end_time,
+            query=customer_phone,
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+        )
+    except Exception as e:
+        print(f" -> ⚠️ [CALENDAR_JUDGE] Erro ao consultar o Google Calendar: {e}")
+        return "extraction_failed"
+
+    evento_existe = bool(events)
+    if action_type == "cancel":
+        return "confirmed" if not evento_existe else "not_confirmed"
+    return "confirmed" if evento_existe else "not_confirmed"
+
+
+def calendar_judge_agent(state: AgentState, config: RunnableConfig):
+    """Nó que verifica, contra o Google Calendar real, se a última resposta
+    (uma confirmação/consulta/cancelamento sem tool_calls no turno) corresponde a
+    uma ação que de fato ocorreu. Só é alcançado quando o roteamento condicional
+    de operational_node/institutional_node/chitchat_node já detectou o padrão de
+    confirmação sem lastro (_resposta_sem_lastro_de_tool) — ver wiring do grafo."""
+    print("\n --- [NÓ: calendar_judge_agent] Verificando ação de calendário na integração real... ---")
+
+    configurable = config.get("configurable", {})
+    tenant_id = configurable.get("tenant_id", "default_tenant")
+    thread_id = configurable.get("thread_id", "unknown")
+
+    ultima_mensagem = state["messages"][-1]
+    conteudo = ultima_mensagem.content if isinstance(ultima_mensagem.content, str) else ""
+    action_type = _tipo_acao_alegada(conteudo)
+
+    tabela_dias, _, _ = get_tabela_dias(7)
+    profile = extract_customer_profile(state["messages"])
+    telefone = profile.get("telefone")
+
+    if action_type == "reschedule":
+        antigo_inicio, antigo_fim = _extrair_periodo_alegado(conteudo, tabela_dias, qual="antigo")
+        novo_inicio, novo_fim = _extrair_periodo_alegado(conteudo, tabela_dias, qual="novo")
+        resultado_antigo = _verificar_acao_calendario(
+            tenant_id, telefone, antigo_inicio, antigo_fim, "cancel", thread_id
+        )
+        resultado_novo = _verificar_acao_calendario(
+            tenant_id, telefone, novo_inicio, novo_fim, "create", thread_id
+        )
+        if resultado_antigo == "confirmed" and resultado_novo == "confirmed":
+            resultado = "confirmed"
+        else:
+            resultado = "not_confirmed"
+    else:
+        inicio, fim = _extrair_periodo_alegado(conteudo, tabela_dias)
+        resultado = _verificar_acao_calendario(tenant_id, telefone, inicio, fim, action_type, thread_id)
+
+    redirect_count = state.get("judge_redirect_count", 0)
+
+    print(
+        f" -> 🔎 [CALENDAR_JUDGE] tenant_id={tenant_id} thread_id={thread_id!r} "
+        f"action_type={action_type} resultado={resultado} redirect_count={redirect_count}"
+    )
+    get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="calendar_judge_agent").info(
+        message=f"Calendar judge verification: {resultado}",
+        method="modules.ia.agent_graph.calendar_judge_agent",
+        line=0,
+        thread_id=thread_id,
+        extra={"action_type": action_type, "result": resultado, "redirect_count": redirect_count},
+    )
+
+    if resultado == "confirmed":
+        return {"judge_verdict": "confirmed", "judge_redirect_count": 0}
+
+    if redirect_count >= JUDGE_MAX_REDIRECTS:
+        print(
+            f" -> ❌ [CALENDAR_JUDGE] Limite de retentativas atingido (tenant_id={tenant_id}). "
+            f"Bloqueando resposta não verificada."
+        )
+        get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="calendar_judge_agent").error(
+            message="Calendar judge unresolved after max redirects",
+            method="modules.ia.agent_graph.calendar_judge_agent",
+            line=0,
+            thread_id=thread_id,
+            extra={"action_type": action_type},
+        )
+        return {
+            "judge_verdict": "blocked",
+            "judge_redirect_count": 0,
+            "messages": [AIMessage(content=(
+                "Desculpa, tive um problema para verificar isso agora. Pode repetir "
+                "sua última mensagem, por favor?"
+            ))],
+        }
+
+    return {"judge_verdict": "redirect", "judge_redirect_count": redirect_count + 1}
+
+
+def _post_judge_router(state: AgentState) -> str:
+    """Lê o veredito que calendar_judge_agent acabou de gravar no state."""
+    if state.get("judge_verdict") == "redirect":
+        return "operational_node"
+    return "end"
+
+
+def _operational_output_router(state: AgentState, config: RunnableConfig) -> str:
+    """Substitui o `tools_condition` puro na saída de operational_node: quando não
+    há tool_calls pendentes, verifica se a resposta tem cara de confirmação sem
+    lastro e, se sim, passa por calendar_judge_agent antes de liberar para END."""
+    if tools_condition(state) == "tools":
+        return "tools"
+
+    ultima_mensagem = state["messages"][-1]
+    guardrail_acionado = _resposta_sem_lastro_de_tool(ultima_mensagem, state["messages"])
+    if not guardrail_acionado:
+        return "end"
+
+    configurable = config.get("configurable", {})
+    tenant_id = configurable.get("tenant_id", "default_tenant")
+    thread_id = configurable.get("thread_id", "unknown")
+    if not get_active_tools(tenant_id):
+        return "end"
+
+    # Mesma tag [CALENDAR_GUARDRAIL_REDIRECT] usada por institutional_node/chitchat_node
+    # (EDI-61) — grepável de forma única independente de qual nó disparou o juiz.
+    trecho = ultima_mensagem.content if isinstance(ultima_mensagem.content, str) else str(ultima_mensagem.content)
+    trecho = trecho[:200]
+    print(
+        f" -> 🛡️ [CALENDAR_GUARDRAIL_REDIRECT] node=operational_node tenant_id={tenant_id} "
+        f"thread_id={thread_id!r} motivo={guardrail_acionado} trecho={trecho!r}. "
+        f"Redirecionando para calendar_judge_agent verificar a ação real de calendário "
+        f"antes de responder ao cliente."
+    )
+    get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent="operational_node").warn(
+        message=f"Calendar guardrail redirect: {guardrail_acionado}",
+        method="modules.ia.agent_graph._operational_output_router",
+        line=0,
+        thread_id=thread_id,
+        extra={"reason": guardrail_acionado, "excerpt": trecho, "redirected_to": "calendar_judge_agent"},
+    )
+
+    return "calendar_judge_agent"
+
+
+# ============================================================================
 # PASSO 6: NÓ DE CONVERSAS CASUAIS (Chitchat)
 # ============================================================================
 def chitchat_node(state: AgentState, config: RunnableConfig):
@@ -692,10 +963,11 @@ def chitchat_node(state: AgentState, config: RunnableConfig):
 # calendário, horário de funcionamento, SESSION CONTACT MEMORY, guardrail de lastro,
 # retry com tool_choice="required"), reaproveitamos a MESMA detecção heurística já
 # usada dentro do operational_node (_resposta_sem_lastro_de_tool) e, se ela disparar,
-# redirecionamos o turno para operational_node — que tem as tools reais e todo o
-# guardrail já revisado — em vez de ir direto para END. O cliente só vê a última
-# mensagem do estado final (ver modules/webhook/whatsapp.py), então mesmo a resposta
-# alucinada deste nó nunca chega até ele.
+# redirecionamos o turno para calendar_judge_agent (EDI-72) — que verifica de fato
+# contra o Google Calendar antes de decidir entre liberar a resposta ou mandar para
+# operational_node executar a ação real. O cliente só vê a última mensagem do estado
+# final (ver modules/webhook/whatsapp.py), então mesmo a resposta alucinada deste nó
+# nunca chega até ele.
 def _make_pre_end_guardrail_router(node_name: str):
     """Fábrica da função de roteamento condicional pós-nó para institutional_node/chitchat_node."""
 
@@ -723,7 +995,7 @@ def _make_pre_end_guardrail_router(node_name: str):
         print(
             f" -> 🛡️ [CALENDAR_GUARDRAIL_REDIRECT] node={node_name} tenant_id={tenant_id} "
             f"thread_id={thread_id!r} motivo={guardrail_acionado} trecho={trecho!r}. "
-            f"Redirecionando para operational_node para executar a ação real de calendário "
+            f"Redirecionando para calendar_judge_agent verificar a ação real de calendário "
             f"antes de responder ao cliente."
         )
         get_logger(tenant_id=tenant_id, tenant_name=tenant_id, agent=node_name).warn(
@@ -731,9 +1003,9 @@ def _make_pre_end_guardrail_router(node_name: str):
             method="modules.ia.agent_graph._make_pre_end_guardrail_router",
             line=808,
             thread_id=thread_id,
-            extra={"reason": guardrail_acionado, "excerpt": trecho, "redirected_to": "operational_node"},
+            extra={"reason": guardrail_acionado, "excerpt": trecho, "redirected_to": "calendar_judge_agent"},
         )
-        return "operational_node"
+        return "calendar_judge_agent"
 
     return _router
 
@@ -774,6 +1046,7 @@ builder.add_node("routing_agent", routing_agent)
 builder.add_node("institutional_node", institutional_node)
 builder.add_node("operational_node", operational_node)
 builder.add_node("chitchat_node", chitchat_node)
+builder.add_node("calendar_judge_agent", calendar_judge_agent)
 builder.add_node("tools", dynamic_tool_node)
 
 builder.set_entry_point("routing_agent")
@@ -788,32 +1061,50 @@ builder.add_conditional_edges(
     }
 )
 
+# EDI-72: quando operational_node termina sem tool_calls pendentes, não vai mais
+# direto para END — _operational_output_router verifica se a resposta tem cara de
+# confirmação sem lastro e, se sim, passa por calendar_judge_agent antes de liberar
+# (ver definição do router acima, junto de calendar_judge_agent).
 builder.add_conditional_edges(
     "operational_node",
-    tools_condition,
+    _operational_output_router,
     {
         "tools": "tools",
-        END: END
+        "calendar_judge_agent": "calendar_judge_agent",
+        "end": END,
     }
 )
 
 builder.add_edge("tools", "operational_node")
 
-# EDI-61: em vez de ir sempre para END, institutional_node/chitchat_node passam pelo
-# guardrail de "confirmação sem lastro de tool" (ver _make_pre_end_guardrail_router
-# acima) — se disparar e o tenant tiver agenda habilitada, o turno é redirecionado
-# para operational_node para executar a ação real antes de responder ao cliente.
+# EDI-61/EDI-72: em vez de ir sempre para END, institutional_node/chitchat_node passam
+# pelo guardrail de "confirmação sem lastro de tool" (ver _make_pre_end_guardrail_router
+# acima) — se disparar e o tenant tiver agenda habilitada, o turno é redirecionado para
+# calendar_judge_agent, que verifica de fato contra o Google Calendar antes de decidir
+# entre liberar a resposta ou mandar para operational_node executar a ação real.
 builder.add_conditional_edges(
     "institutional_node",
     _institutional_output_router,
     {
-        "operational_node": "operational_node",
+        "calendar_judge_agent": "calendar_judge_agent",
         "end": END,
     },
 )
 builder.add_conditional_edges(
     "chitchat_node",
     _chitchat_output_router,
+    {
+        "calendar_judge_agent": "calendar_judge_agent",
+        "end": END,
+    },
+)
+
+# EDI-72: calendar_judge_agent decide, com base no veredito que ele mesmo gravou no
+# state (judge_verdict), entre liberar a resposta (END) ou mandar de volta para
+# operational_node executar a ação real de calendário.
+builder.add_conditional_edges(
+    "calendar_judge_agent",
+    _post_judge_router,
     {
         "operational_node": "operational_node",
         "end": END,
