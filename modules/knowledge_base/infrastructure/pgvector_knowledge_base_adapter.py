@@ -27,3 +27,11 @@ class PgVectorKnowledgeBaseAdapter:
 
     def delete(self, tenant_id: str) -> None:
         self.gerenciador.deletar_por_tenant(tenant_id)
+
+    def reindex_item(self, tenant_id: str, item_id: str, content: str) -> None:
+        """Substitui só os vetores daquele item (EDI-39) — não afeta os demais itens do tenant."""
+        self.gerenciador.deletar_por_item(tenant_id, item_id)
+        self.gerenciador.criar_banco_com_textos([content], tenant_id, item_id=item_id)
+
+    def delete_item(self, tenant_id: str, item_id: str) -> None:
+        self.gerenciador.deletar_por_item(tenant_id, item_id)

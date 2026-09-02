@@ -42,6 +42,8 @@ pypdf
 requests
 httpx
 tiktoken
+# Upload multipart (EDI-39) — obrigatório para FastAPI aceitar File()/Form()
+python-multipart
 
 langchain-postgres
 psycopg[binary]
