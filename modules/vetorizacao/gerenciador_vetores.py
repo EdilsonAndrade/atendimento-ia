@@ -43,18 +43,26 @@ class GerenciadorVetores:
             use_jsonb=True,
         )
 
-    def criar_banco_com_textos(self, textos: list, tenant_id: str):
+    def criar_banco_com_textos(self, textos: list, tenant_id: str, item_id: str = None):
         """
         COMENTÁRIO: Divide cada texto em chunks dentro da janela de tokens do modelo de
         embedding, converte em vetores via HuggingFace e salva no PostgreSQL, injetando
         o tenant_id nos metadados para garantir o isolamento entre clientes.
+
+        Quando `item_id` é informado (EDI-39), cada chunk também carrega esse metadado,
+        permitindo apagar/reindexar só os vetores daquele item (`deletar_por_item`) sem
+        afetar os demais itens do mesmo tenant.
         """
         # COMENTÁRIO: Sem esse split, um texto maior que a janela do modelo (128 tokens)
         # era truncado silenciosamente na hora do embedding — só o início virava vetor.
+        metadata_base = {"tenant_id": tenant_id}
+        if item_id is not None:
+            metadata_base["item_id"] = item_id
+
         documentos = [
             Document(
                 page_content=pedaco,
-                metadata={"tenant_id": tenant_id, "source_index": indice_texto, "chunk_index": indice_chunk},
+                metadata={**metadata_base, "source_index": indice_texto, "chunk_index": indice_chunk},
             )
             for indice_texto, texto in enumerate(textos)
             for indice_chunk, pedaco in enumerate(_TEXT_SPLITTER.split_text(texto))
@@ -86,6 +94,24 @@ class GerenciadorVetores:
         with psycopg.connect(DB_URI, autocommit=True) as conn:
             with conn.cursor() as cur:
                 cur.execute(delete_query, (self.collection_name, tenant_id))
+
+    def deletar_por_item(self, tenant_id: str, item_id: str) -> None:
+        """
+        COMENTÁRIO: Remove só os vetores de um item específico do tenant (EDI-39) —
+        os demais itens do mesmo tenant permanecem intactos. Usado antes de reindexar
+        (edição/substituição de um item) e ao excluí-lo individualmente.
+        """
+        delete_query = """
+            DELETE FROM langchain_pg_embedding
+            WHERE collection_id = (
+                SELECT uuid FROM langchain_pg_collection WHERE name = %s
+            )
+            AND cmetadata->>'tenant_id' = %s
+            AND cmetadata->>'item_id' = %s;
+        """
+        with psycopg.connect(DB_URI, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(delete_query, (self.collection_name, tenant_id, item_id))
 
     def search_context(self, pergunta: str, tenant_id: str, quantidade_resultados: int = 1):
         """
