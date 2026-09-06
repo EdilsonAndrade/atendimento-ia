@@ -712,7 +712,10 @@ def _extrair_periodo_alegado(
     )
 
     try:
-        extrator = llm.with_structured_output(_PeriodoAlegado)
+        # method="function_calling": o modo default (json_schema) não é suportado
+        # pelo endpoint da DeepSeek ("This response_format type is unavailable now"),
+        # o que fazia _extrair_periodo_alegado falhar sempre com extraction_failed.
+        extrator = llm.with_structured_output(_PeriodoAlegado, method="function_calling")
         resultado = extrator.invoke(prompt)
         return resultado.start_time, resultado.end_time
     except Exception as e:
