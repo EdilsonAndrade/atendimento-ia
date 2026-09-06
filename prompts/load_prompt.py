@@ -8,6 +8,7 @@ from prompts.prompt_resolver import (
     resolver_prompt_e_guardrails,
 )
 from modules.observability.interface.logger_factory import get_logger as get_obs_logger
+from prompts.system_prompt_loader import carregar_past_date_awareness_rule
 
 # Caminhos locais para os arquivos Markdown (Plano de Contingência / Fallback)
 PROMPTS_DIR = Path(__file__).resolve().parent
@@ -235,7 +236,15 @@ def carregar_operacional_prompt(tenant_id, tabela_calendario_str, hora_atual_str
         )
 
 
-def carregar_institutional_prompt(tenant_id, contexto_formatado, historico_texto, pergunta_usuario):
+def carregar_institutional_prompt(
+    tenant_id,
+    contexto_formatado,
+    historico_texto,
+    pergunta_usuario,
+    tabela_calendario_str=None,
+    hora_atual_str=None,
+    data_hoje_iso=None,
+):
     """
     Nível 1: vínculo institutional próprio do tenant no banco — usa o conteúdo e os
     guardrails vinculados especificamente a esse prompt (+ globais).
@@ -244,7 +253,27 @@ def carregar_institutional_prompt(tenant_id, contexto_formatado, historico_texto
     operational_node do tenant (carregar_guardrails) — comportamento idêntico ao
     que existia antes desta feature, quando institutional sempre reaproveitava os
     guardrails do operational.
+
+    Os três parâmetros de data são opcionais (compatibilidade com testes/chamadas
+    antigas) mas SEMPRE são passados pelo agent_graph.py em produção. Bug real:
+    tenants que copiam {tabela_calendario_str}/{hora_atual_str}/{data_hoje_iso} do
+    prompt operacional para o institucional viam esses placeholders vazarem como
+    texto literal para o LLM, e o nó nunca sabia que dia era "hoje" — aceitando
+    datas já passadas em pedidos de orçamento/cotação. A regra de validação em si
+    (PAST DATE AWARENESS RULE) é um system prompt global — editável no Painel
+    Administrador, chave `past_date_awareness_rule` — não hardcoded aqui, mesmo
+    padrão de GROUNDEDNESS_RULE/BOOKING_INTEGRITY_RULE (ver
+    prompts/system_prompt_loader.py e migrations/versions/0012_past_date_awareness_rule.py).
     """
+    valores_data = dict(
+        tabela_calendario_str=tabela_calendario_str or "",
+        hora_atual_str=hora_atual_str or "",
+        data_hoje_iso=data_hoje_iso or "",
+    )
+    regra_data_passada = (
+        f"\n\n{carregar_past_date_awareness_rule(data_hoje_iso)}" if data_hoje_iso else ""
+    )
+
     try:
         service = PromptManagerService(get_db_connection)
 
@@ -265,14 +294,16 @@ def carregar_institutional_prompt(tenant_id, contexto_formatado, historico_texto
             guardrails_str = carregar_guardrails(tenant_id)
             template = INSTITUTIONAL_PROMPT_PATH.read_text(encoding="utf-8")
 
-        return _aplicar_guardrails(
+        resultado = _aplicar_guardrails(
             template,
             guardrails_str,
             tenant_id=tenant_id,
             contexto_formatado=contexto_formatado,
             historico_texto=historico_texto,
             pergunta_usuario=pergunta_usuario,
+            **valores_data,
         )
+        return resultado + regra_data_passada
 
     except Exception as e:
         print(f"[WARN] Falha ao carregar prompt institutional do banco para tenant {tenant_id}: {e}. Usando fallback local.")
@@ -284,14 +315,16 @@ def carregar_institutional_prompt(tenant_id, contexto_formatado, historico_texto
             extra={"error": str(e)},
         )
         template = INSTITUTIONAL_PROMPT_PATH.read_text(encoding="utf-8")
-        return _aplicar_guardrails(
+        resultado = _aplicar_guardrails(
             template,
             GUARDRAIL_PATH.read_text(encoding="utf-8"),
             tenant_id=tenant_id,
             contexto_formatado=contexto_formatado,
             historico_texto=historico_texto,
             pergunta_usuario=pergunta_usuario,
+            **valores_data,
         )
+        return resultado + regra_data_passada
 
 
 def carregar_chitchat_prompt(tenant_id):

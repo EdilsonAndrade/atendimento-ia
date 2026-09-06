@@ -5,6 +5,7 @@ specs/012-grafana-loki-observability/plan.md
 ## RULES
 1. Always speak in Portugese in the chat
 2. EVITE ao máximo detalhar muito, SOMENTE quando solicito ou não compreensivo pelo usuário
+3. Never write prompts hardcoded, if it's system or not lets create migration and fallback only in case there is not in the database table
 
 ## GUARDRAILS
 1. SEMPRE acesse o linear via MCP configurado no arquivo `./.mcp.json` quando mencionado algum numero de ticket, card, ou issue pelo usuário

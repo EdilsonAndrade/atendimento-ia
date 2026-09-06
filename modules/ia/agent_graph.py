@@ -436,11 +436,19 @@ def institutional_node(state: AgentState, config: RunnableConfig):
 
     # 4. Prompt institutional do tenant (vínculo próprio > fallback para o prompt/guardrails
     # do operational_node do tenant, ver FR-004) + RAG + Histórico de Conversa (EDI-42)
+    # Data/hora reais também são passadas aqui (mesma fonte do operational_node):
+    # sem isso o institutional_node não sabia que dia era "hoje" e aceitava datas
+    # já passadas em pedidos de orçamento/cotação (ex.: "para março de 2026" com o
+    # sistema já em setembro/2026).
+    tabela_dias, hora_atual_str, data_hoje_iso = get_tabela_dias(7)
     prompt_final = carregar_institutional_prompt(
         tenant_id=tenant_id,
         contexto_formatado=contexto_formatado,
         historico_texto=historico_texto,
         pergunta_usuario=pergunta_usuario,
+        tabela_calendario_str=tabela_dias,
+        hora_atual_str=hora_atual_str,
+        data_hoje_iso=data_hoje_iso,
     )
     # Reforça a regra anti-alucinação por cima do prompt carregado — necessário porque o
     # template (do banco ou local) não necessariamente a inclui, mesmo padrão do operational_node.

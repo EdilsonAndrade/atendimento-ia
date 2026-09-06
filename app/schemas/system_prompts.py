@@ -11,6 +11,7 @@ SystemPromptKey = Literal[
     "groundedness_rule",
     "chitchat_no_knowledge_rule",
     "booking_integrity_rule",
+    "past_date_awareness_rule",
 ]
 
 

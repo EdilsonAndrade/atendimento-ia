@@ -106,6 +106,15 @@ _FALLBACK_BOOKING_INTEGRITY_RULE = (
     "cliente deseja agendar agora.\n"
 )
 
+_FALLBACK_PAST_DATE_AWARENESS_RULE = (
+    "PAST DATE AWARENESS RULE (CRITICAL): Today's date is {data_hoje_iso} (YYYY-MM-DD). "
+    "If the user mentions any date, month, or year for an event that has already fully "
+    "passed relative to today — including a bare month+year with no day (e.g. a past "
+    "month of the current year, or any year before the current one) — do NOT treat it "
+    "as valid or proceed enthusiastically with a quote/availability check. Inform the "
+    "user that date has already passed and ask for a future date before continuing.\n"
+)
+
 # Casa apenas placeholders simples do tipo {nome_da_chave} — mesma técnica de
 # `prompts/load_prompt.py`: um placeholder desconhecido (ex.: um exemplo JSON
 # colado pelo admin) fica intacto no texto em vez de estourar KeyError.
@@ -166,3 +175,13 @@ def carregar_routing_agent_prompt(previous_turn_intent: str) -> str:
     renderiza o placeholder `{previous_turn_intent}`."""
     template = _carregar_com_fallback("routing_agent", _FALLBACK_ROUTING_AGENT_TEMPLATE)
     return _render(template, previous_turn_intent=previous_turn_intent)
+
+
+def carregar_past_date_awareness_rule(data_hoje_iso: str) -> str:
+    """Carrega a regra global de data já passada (do banco, com fallback local)
+    e renderiza o placeholder `{data_hoje_iso}`. Usada pelo institutional_node
+    (que não tem tools de calendário, mas ainda assim precisa recusar cotações
+    para datas que já passaram — ver EDI-72 e bug real descrito em
+    migrations/versions/0012_past_date_awareness_rule.py)."""
+    template = _carregar_com_fallback("past_date_awareness_rule", _FALLBACK_PAST_DATE_AWARENESS_RULE)
+    return _render(template, data_hoje_iso=data_hoje_iso)

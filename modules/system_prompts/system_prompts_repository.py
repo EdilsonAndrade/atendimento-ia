@@ -6,8 +6,9 @@ class SystemPromptsRepository:
     """Acesso à tabela `system_prompts` (EDI-71).
 
     Diferente de `modules/prompt_manager` (prompts POR TENANT, com N:N de
-    guardrails), aqui o conjunto de linhas é fixo — os 4 `prompt_key`s
-    semeados pela migration `0010_system_prompts` — e o versionamento é
+    guardrails), aqui o conjunto de linhas é fixo — os `prompt_key`s
+    semeados pelas migrations `0010_system_prompts` e `0012_past_date_awareness_rule`
+    — e o versionamento é
     apenas de 2 níveis (`current_version`/`last_version`), sem histórico
     além disso. Não há endpoint de criação/exclusão de linha.
     """
