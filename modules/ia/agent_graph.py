@@ -2,6 +2,7 @@
 import psycopg
 import os
 import re
+from psycopg_pool import ConnectionPool
 from typing import TypedDict, Annotated, Sequence, Literal, Optional
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
@@ -1124,21 +1125,34 @@ builder.add_conditional_edges(
 
 def get_compiled_graph():
     """
-    Instancia o Pool de conexões do PostgreSQL e compila o Grafo 
+    Instancia o Pool de conexões do PostgreSQL e compila o Grafo
     usando o PostgresSaver para persistência real do histórico.
     """
     connection_kwargs = {
         "autocommit": True,
         "prepare_threshold": 0,
     }
-    
-    # Estabelece a conexão com o PostgreSQL para o Checkpointer
-    conn = psycopg.connect(DB_URI, **connection_kwargs)
-    checkpointer = PostgresSaver(conn)
-    
+
+    # Pool de verdade (não uma única conexão crua): no incidente de
+    # 2026-09-12 o Postgres derrubou a conexão única do checkpointer com
+    # `AdminShutdown` (restart/manutenção) e o processo ficou preso nela para
+    # sempre, derrubando todo `/api/v1/chat` até o restart manual do
+    # container. Com `check=ConnectionPool.check_connection`, cada operação
+    # valida a conexão antes de usá-la e o pool descarta/reabre sozinho as
+    # que caírem — PostgresSaver aceita um ConnectionPool nativamente.
+    pool = ConnectionPool(
+        conninfo=DB_URI,
+        kwargs=connection_kwargs,
+        min_size=1,
+        max_size=10,
+        check=ConnectionPool.check_connection,
+        open=True,
+    )
+    checkpointer = PostgresSaver(pool)
+
     # Cria automaticamente as tabelas do LangGraph no Postgres se não existirem
     checkpointer.setup()
-    
+
     # Compila e retorna o grafo com memória persistente
     return builder.compile(checkpointer=checkpointer)
 

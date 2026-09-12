@@ -38,6 +38,9 @@ class FakeConnection:
         self.last_cursor = FakeCursor(self._rows, self._count)
         return self.last_cursor
 
+    def close(self):
+        pass
+
 
 def make_repository(monkeypatch, rows, count=None):
     connection = FakeConnection(rows, count)

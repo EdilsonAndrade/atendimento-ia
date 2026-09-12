@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 from infrastructure.connection import get_db_connection
 from modules.observability.interface.logger_factory import get_logger
 
@@ -10,11 +12,34 @@ class TenantRepository:
         `conn.transaction()` externo), não este repositório.
         """
         self._owns_connection = connection is None
-        self.db_connection = connection or get_db_connection()
+        self._external_connection = connection
 
-    def _commit(self):
+    @contextmanager
+    def _connection(self):
+        """Devolve a conexão a usar nesta chamada.
+
+        Quando o repositório é dono da conexão, abre uma NOVA a cada operação
+        em vez de guardar uma única conexão pelo tempo de vida do objeto — foi
+        exatamente isso (uma conexão pega uma vez em `__init__` e reaproveitada
+        para sempre por um `TenantService` de vida longa) que deixou a API
+        presa numa conexão morta durante o incidente de 2026-09-12, quando o
+        Postgres a derrubou com `AdminShutdown`. Uma conexão nova por operação
+        nunca fica "velha": se o Postgres tiver reiniciado, ela conecta limpa.
+        Quando uma conexão foi injetada (exclusão em cascata), usa sempre a
+        mesma — quem controla o ciclo de vida dela é o dono externo.
+        """
         if self._owns_connection:
-            self.db_connection.commit()
+            conn = get_db_connection()
+            try:
+                yield conn
+            finally:
+                conn.close()
+        else:
+            yield self._external_connection
+
+    def _commit(self, conn):
+        if self._owns_connection:
+            conn.commit()
 
     def create_tenant(self, tenant_data) -> dict:
         # Logic to create a new tenant in the database
@@ -27,22 +52,23 @@ class TenantRepository:
                   monthly_message_limit, notification_emails,
                   oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at;
         """
-        cursor = self.db_connection.cursor()
-        cursor.execute(create_query, (
-            tenant_data['tenant_id'],
-            tenant_data['name'],
-            tenant_data['google_calendar_id'],
-            tenant_data['allowed_domains'],
-            tenant_data.get('scheduling_enabled', True),
-            tenant_data.get('monthly_message_limit'),
-            tenant_data.get('notification_emails') or [],
-            tenant_data.get('oferta_vigente_texto'),
-            tenant_data.get('oferta_vigente_validade'),
-            tenant_data.get('retention_days'),
-        ))
-        new_tenant = cursor.fetchone()
-        self._commit()
-        cursor.close()
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(create_query, (
+                tenant_data['tenant_id'],
+                tenant_data['name'],
+                tenant_data['google_calendar_id'],
+                tenant_data['allowed_domains'],
+                tenant_data.get('scheduling_enabled', True),
+                tenant_data.get('monthly_message_limit'),
+                tenant_data.get('notification_emails') or [],
+                tenant_data.get('oferta_vigente_texto'),
+                tenant_data.get('oferta_vigente_validade'),
+                tenant_data.get('retention_days'),
+            ))
+            new_tenant = cursor.fetchone()
+            self._commit(conn)
+            cursor.close()
         # COMENTÁRIO: Retorna o novo tenant criado como um dicionário
         return {
             'id': new_tenant[0],
@@ -73,57 +99,58 @@ class TenantRepository:
         fechar. A validação do prompt acontece antes, no service, de modo que os
         erros comuns (prompt inexistente, node_type errado) nunca chegam aqui.
         """
-        cursor = self.db_connection.cursor()
-        try:
-            cursor.execute(
-                """
-                INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, scheduling_enabled,
-                                      monthly_message_limit, notification_emails,
-                                      oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled,
-                          monthly_message_limit, notification_emails,
-                          oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at;
-                """,
-                (
-                    tenant_data['tenant_id'],
-                    tenant_data['name'],
-                    tenant_data['google_calendar_id'],
-                    tenant_data['allowed_domains'],
-                    tenant_data.get('scheduling_enabled', True),
-                    tenant_data.get('monthly_message_limit'),
-                    tenant_data.get('notification_emails') or [],
-                    tenant_data.get('oferta_vigente_texto'),
-                    tenant_data.get('oferta_vigente_validade'),
-                    tenant_data.get('retention_days'),
-                ),
-            )
-            new_tenant = cursor.fetchone()
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO tenants (id, name, google_calendar_id, allowed_domains, scheduling_enabled,
+                                          monthly_message_limit, notification_emails,
+                                          oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                    RETURNING id, name, google_calendar_id, allowed_domains, scheduling_enabled,
+                              monthly_message_limit, notification_emails,
+                              oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at;
+                    """,
+                    (
+                        tenant_data['tenant_id'],
+                        tenant_data['name'],
+                        tenant_data['google_calendar_id'],
+                        tenant_data['allowed_domains'],
+                        tenant_data.get('scheduling_enabled', True),
+                        tenant_data.get('monthly_message_limit'),
+                        tenant_data.get('notification_emails') or [],
+                        tenant_data.get('oferta_vigente_texto'),
+                        tenant_data.get('oferta_vigente_validade'),
+                        tenant_data.get('retention_days'),
+                    ),
+                )
+                new_tenant = cursor.fetchone()
 
-            cursor.execute(
-                """
-                INSERT INTO tenant_prompts (tenant_id, prompt_id, is_active)
-                VALUES (%s, %s, TRUE)
-                ON CONFLICT (tenant_id, prompt_id)
-                DO UPDATE SET is_active = TRUE, updated_at = NOW();
-                """,
-                (tenant_data['tenant_id'], prompt_id),
-            )
+                cursor.execute(
+                    """
+                    INSERT INTO tenant_prompts (tenant_id, prompt_id, is_active)
+                    VALUES (%s, %s, TRUE)
+                    ON CONFLICT (tenant_id, prompt_id)
+                    DO UPDATE SET is_active = TRUE, updated_at = NOW();
+                    """,
+                    (tenant_data['tenant_id'], prompt_id),
+                )
 
-            self._commit()
-        except Exception as e:
-            if self._owns_connection:
-                self.db_connection.rollback()
-            get_logger(tenant_id=tenant_data.get("tenant_id", "unknown"), tenant_name=tenant_data.get("tenant_id", "unknown"), agent="tenant_repository").error(
-                message=f"Tenant creation failed: {e}",
-                method="modules.tenant.tenant_repository.create_tenant_with_prompt",
-                line=113,
-                thread_id="system",
-                extra={"error": str(e), "prompt_id": prompt_id},
-            )
-            raise
-        finally:
-            cursor.close()
+                self._commit(conn)
+            except Exception as e:
+                if self._owns_connection:
+                    conn.rollback()
+                get_logger(tenant_id=tenant_data.get("tenant_id", "unknown"), tenant_name=tenant_data.get("tenant_id", "unknown"), agent="tenant_repository").error(
+                    message=f"Tenant creation failed: {e}",
+                    method="modules.tenant.tenant_repository.create_tenant_with_prompt",
+                    line=113,
+                    thread_id="system",
+                    extra={"error": str(e), "prompt_id": prompt_id},
+                )
+                raise
+            finally:
+                cursor.close()
 
         return {
             'id': new_tenant[0],
@@ -147,10 +174,11 @@ class TenantRepository:
             "oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at "
             "FROM tenants WHERE id = %s;"
         )
-        cursor = self.db_connection.cursor()
-        cursor.execute(get_query, (tenant_id,))
-        tenant = cursor.fetchone()
-        cursor.close()
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(get_query, (tenant_id,))
+            tenant = cursor.fetchone()
+            cursor.close()
         if tenant:
             return {
                 'id': tenant[0],
@@ -180,22 +208,23 @@ class TenantRepository:
                   monthly_message_limit, notification_emails,
                   oferta_vigente_texto, oferta_vigente_validade, retention_days, created_at, updated_at;
         """
-        cursor = self.db_connection.cursor()
-        cursor.execute(update_query, (
-            tenant_data['name'],
-            tenant_data['google_calendar_id'],
-            tenant_data['allowed_domains'],
-            tenant_data.get('scheduling_enabled', True),
-            tenant_data.get('monthly_message_limit'),
-            tenant_data.get('notification_emails') or [],
-            tenant_data.get('oferta_vigente_texto'),
-            tenant_data.get('oferta_vigente_validade'),
-            tenant_data.get('retention_days'),
-            tenant_id,
-        ))
-        updated_tenant = cursor.fetchone()
-        self._commit()
-        cursor.close()
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(update_query, (
+                tenant_data['name'],
+                tenant_data['google_calendar_id'],
+                tenant_data['allowed_domains'],
+                tenant_data.get('scheduling_enabled', True),
+                tenant_data.get('monthly_message_limit'),
+                tenant_data.get('notification_emails') or [],
+                tenant_data.get('oferta_vigente_texto'),
+                tenant_data.get('oferta_vigente_validade'),
+                tenant_data.get('retention_days'),
+                tenant_id,
+            ))
+            updated_tenant = cursor.fetchone()
+            self._commit(conn)
+            cursor.close()
         if updated_tenant:
             return {
                 'id': updated_tenant[0],
@@ -240,10 +269,11 @@ class TenantRepository:
             """
             params = (limit, offset)
 
-        cursor = self.db_connection.cursor()
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        cursor.close()
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            cursor.close()
         return [
             {
                 'id': row[0],
@@ -266,32 +296,35 @@ class TenantRepository:
         """Consulta enxuta (sem JOIN de prompts/guardrails, ao contrário de
         `list_tenants`) para o job de expurgo de `conversation_messages` (EDI-53) —
         só os tenants que de fato têm `retention_days` configurado."""
-        cursor = self.db_connection.cursor()
-        cursor.execute("SELECT id, retention_days FROM tenants WHERE retention_days IS NOT NULL;")
-        rows = cursor.fetchall()
-        cursor.close()
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, retention_days FROM tenants WHERE retention_days IS NOT NULL;")
+            rows = cursor.fetchall()
+            cursor.close()
         return [{"id": row[0], "retention_days": row[1]} for row in rows]
 
     def count_tenants(self, term: str | None) -> int:
-        cursor = self.db_connection.cursor()
-        if term:
-            pattern = f"%{term}%"
-            cursor.execute(
-                "SELECT COUNT(*) FROM tenants WHERE id ILIKE %s OR name ILIKE %s;",
-                (pattern, pattern),
-            )
-        else:
-            cursor.execute("SELECT COUNT(*) FROM tenants;")
-        total = cursor.fetchone()[0]
-        cursor.close()
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            if term:
+                pattern = f"%{term}%"
+                cursor.execute(
+                    "SELECT COUNT(*) FROM tenants WHERE id ILIKE %s OR name ILIKE %s;",
+                    (pattern, pattern),
+                )
+            else:
+                cursor.execute("SELECT COUNT(*) FROM tenants;")
+            total = cursor.fetchone()[0]
+            cursor.close()
         return total
 
     def delete_tenant(self, tenant_id) -> int | None:
         # Logic to delete a tenant from the database
         delete_query = "DELETE FROM tenants WHERE id = %s RETURNING id;"
-        cursor = self.db_connection.cursor()
-        cursor.execute(delete_query, (tenant_id,))
-        deleted_tenant = cursor.fetchone()
-        self._commit()
-        cursor.close()
+        with self._connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(delete_query, (tenant_id,))
+            deleted_tenant = cursor.fetchone()
+            self._commit(conn)
+            cursor.close()
         return deleted_tenant[0] if deleted_tenant else None
